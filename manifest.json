@@ -1,0 +1,14 @@
+{
+  "name": "Zaijabolical",
+  "short_name": "Zaijabolical",
+  "description": "Vegan meal-prep planner",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f1e7",
+  "theme_color": "#2b5f37",
+  "icons": [
+    {"src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}
