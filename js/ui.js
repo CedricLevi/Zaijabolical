@@ -272,12 +272,31 @@ function renderNav() {
   nav.append(syncBadge());
   nav.append(h("button", { class: "btn ghost sm theme-toggle", onclick: toggleTheme }, svg("moon"), "Theme"));
 }
+function applyTheme(mode) {   // "light", "dark" or null (follow the phone/computer setting)
+  if (mode) document.documentElement.dataset.theme = mode; else delete document.documentElement.dataset.theme;
+  const dark = mode ? mode === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.querySelectorAll('meta[name="theme-color"]').forEach(m => {
+    m.setAttribute("content", dark ? "#151a16" : "#f4f1e7");
+    if (mode) m.removeAttribute("media");
+  });
+}
+function setTheme(mode) { store.set("theme", mode || null); applyTheme(mode || null); }
 function toggleTheme() {
   const cur = document.documentElement.dataset.theme
     || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  const next = cur === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
-  store.set("theme", next);
+  setTheme(cur === "dark" ? "light" : "dark");
+}
+function themePanel() {
+  const cur = store.get("theme", null) || "auto";
+  const seg = h("div", { class: "seg", role: "radiogroup", "aria-label": "Color theme" });
+  for (const [id, label] of [["auto", "Automatic"], ["light", "Light"], ["dark", "Dark"]]) {
+    seg.append(h("button", { class: cur === id ? "on" : "", role: "radio", "aria-checked": cur === id,
+      onclick: () => { setTheme(id === "auto" ? null : id); render(); } }, label));
+  }
+  return h("div", { class: "panel theme-panel" },
+    h("div", null, h("h2", null, "Color theme"),
+      h("p", { class: "muted small", style: { margin: "4px 0 0" } }, "Automatic follows this device's light or dark mode. Saved per device.")),
+    seg);
 }
 function route() {
   document.querySelectorAll(".scrim").forEach(x => x.remove());
@@ -1086,6 +1105,7 @@ function viewSettings() {
         scanStatus.textContent = r.ok ? `Scanning works (${r.engine === "claude" ? "Claude" : "Cloudflare Workers AI, free"}).` : "The scanner is reachable but no AI is switched on yet. See the README's Scanning section.";
       } catch (e) { scanStatus.textContent = e.message; }
     } }, "Check scanning"));
+  root.append(themePanel());
   root.append(h("div", { class: "settings-grid" }, targetsPanel, h("div", null, syncPanel(), suppPanel, structPanel, trackerPanel, scanPanel, dataPanel)));
   return root;
 }
@@ -1190,8 +1210,7 @@ function showConnect(fromSettings) {
 
 /* ---------------- boot ---------------- */
 async function boot() {
-  const theme = store.get("theme", null);
-  if (theme) document.documentElement.dataset.theme = theme;
+  applyTheme(store.get("theme", null));
   const app = document.getElementById("app");
   app.append(loading("Opening your kitchen…"));
   await Z.store.init();
