@@ -18,9 +18,18 @@ BASE = "http://127.0.0.1:8765/"
 
 # ---------- fake USDA ----------
 by_seed = {i["seed_key"]: i for i in FX["ingredients"]}
+AA_NUM = {"aa_trp": "501", "aa_thr": "502", "aa_ile": "503", "aa_leu": "504", "aa_lys": "505", "aa_met": "506", "aa_cys": "507",
+          "aa_phe": "508", "aa_tyr": "509", "aa_val": "510", "aa_his": "512"}
+def amino(item, protein):   # plausible g/100 g: legumes low in methionine, grains low in lysine
+    legume = item["aisle"] in ("Beans & Legumes", "Tofu & Plant Protein")
+    mg_per_g = {"aa_trp": 12, "aa_thr": 38, "aa_ile": 44, "aa_leu": 78, "aa_lys": 64 if legume else 33, "aa_met": 12 if legume else 20,
+                "aa_cys": 11 if legume else 18, "aa_phe": 52, "aa_tyr": 36, "aa_val": 48, "aa_his": 27}
+    return {k: protein * v / 1000 for k, v in mg_per_g.items()}
 def usda_food(item, idx):
     ing = by_seed[item["key"]]
     nuts = [{"nutrientId": NUTS[k], "value": v} for k, v in ing["nutrients"].items() if k in NUTS]
+    if idx % 5:   # leave some foods without amino acid data, like the real database
+        nuts += [{"nutrient": {"number": AA_NUM[k], "name": k}, "amount": v} for k, v in amino(item, ing["nutrients"].get("protein", 0)).items()]
     desc = ", ".join(w.capitalize() if j == 0 else w for j, w in enumerate(item["must"])) + " (test data)"
     return {"fdcId": 900000 + idx, "description": desc, "dataType": item["types"][0], "foodNutrients": nuts}
 PANTRY = json.load(open(os.path.join(ROOT, "tests", "fixtures", "pantry.json")))
@@ -28,7 +37,10 @@ FOODS = {p["query"]: usda_food(p, i) for i, p in enumerate(PANTRY)}
 usda_calls = []
 def handle_usda(route, request):
     usda_calls.append(request.url)
-    if "/foods/search" in request.url:
+    if "/fdc/v1/foods?" in request.url:   # amino acid backfill
+        ids = json.loads(request.post_data)["fdcIds"]
+        body = [x for x in FOODS.values() if x["fdcId"] in ids]
+    elif "/foods/search" in request.url:
         q = json.loads(request.post_data)["query"]
         f = FOODS.get(q)
         other = {"fdcId": 1, "description": "Something else entirely", "dataType": "SR Legacy", "foodNutrients": [{"nutrientId": 1003, "value": 1}]}
@@ -43,7 +55,7 @@ def handle_usda(route, request):
 GH = {"files": {}, "puts": 0}
 def handle_gh(route, request):
     url, m = request.url, request.method
-    h = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "GET,PUT,OPTIONS"}
+    h = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "GET,PUT,DELETE,OPTIONS"}
     if m == "OPTIONS": return route.fulfill(status=204, headers=h)
     if request.headers.get("authorization") != "Bearer test-token":
         return route.fulfill(status=401, content_type="application/json", body='{"message":"Bad credentials"}', headers=h)
@@ -52,6 +64,20 @@ def handle_gh(route, request):
         return route.fulfill(status=404, content_type="application/json", body='{"message":"Not Found"}', headers=h)
     if path == "" and m == "GET":
         return route.fulfill(status=200, content_type="application/json", body=json.dumps({"private": True, "permissions": {"push": True}}), headers=h)
+    if path.startswith("/contents/media/"):
+        name = path[len("/contents/"):]
+        f = GH["files"].get(name)
+        if m == "GET":
+            if not f: return route.fulfill(status=404, content_type="application/json", body='{"message":"Not Found"}', headers=h)
+            return route.fulfill(status=200, content_type="application/json", body=json.dumps({"content": f[0], "sha": f[1]}), headers=h)
+        if m == "PUT":
+            b = json.loads(request.post_data)
+            if f: return route.fulfill(status=422, content_type="application/json", body='{"message":"sha wasn\'t supplied"}', headers=h)
+            GH["files"][name] = (b["content"], hashlib.sha1(b["content"].encode()).hexdigest()); GH["media_puts"] = GH.get("media_puts", 0) + 1
+            return route.fulfill(status=201, content_type="application/json", body=json.dumps({"content": {"sha": GH["files"][name][1]}}), headers=h)
+        if m == "DELETE":
+            GH["files"].pop(name, None)
+            return route.fulfill(status=200, content_type="application/json", body="{}", headers=h)
     if path.startswith("/contents/data.json"):
         f = GH["files"].get("data.json")
         if m == "GET":
@@ -66,6 +92,29 @@ def handle_gh(route, request):
             return route.fulfill(status=200, content_type="application/json", body=json.dumps({"content": {"sha": sha}}), headers=h)
     route.fulfill(status=404, headers=h, body="{}")
 
+SCANS = []
+SCAN_RECIPE = {"name": "Smoky Lentil Stew", "servings": 4, "category": "Main", "prep_min": 10, "cook_min": 35,
+    "description": "A thick, smoky stew from a library cookbook.",
+    "ingredients": [{"name": "red lentils", "amount": 1, "unit": "cup", "note": "rinsed", "text": "1 cup red lentils, rinsed"},
+                    {"name": "smoked paprika", "amount": 2, "unit": "tsp", "note": "", "text": "2 tsp smoked paprika"},
+                    {"name": "onion", "amount": 1, "unit": "", "note": "diced", "text": "1 onion, diced"},
+                    {"name": "spinach", "amount": 2, "unit": "handfuls", "note": "", "text": "2 handfuls spinach", "unclear": True}],
+    "steps": ["Cook the onion in a little oil for 5 minutes.", "Add lentils, paprika and 4 cups water; simmer 30 minutes.", "Stir in spinach."],
+    "notes": "Freezes well."}
+SCAN_LABEL = {"product": "Soy milk, unsweetened", "serving_text": "1 cup (240 mL)", "serving_grams": None, "serving_ml": 240,
+    "nutrients": {"calories": {"amount": 80, "unit": "kcal"}, "protein": {"amount": 7, "unit": "g"}, "total_fat": {"amount": 4, "unit": "g"},
+                  "calcium": {"amount": 300, "unit": "mg"}, "vitamin_d": {"amount": 2.7, "unit": "mcg"}, "vitamin_b12": {"amount": None, "unit": "", "dv": 120}}}
+def handle_scan(route, request):
+    b = json.loads(request.post_data)
+    SCANS.append((b["kind"], request.headers.get("x-zaija-key"), len(b.get("images", []))))
+    if request.headers.get("x-zaija-key") != "test-token":
+        return route.fulfill(status=401, content_type="application/json", body='{"error":"bad key"}')
+    if b["kind"] == "ping": res = {"ok": True, "engine": "workers-ai"}
+    else:
+        assert b["images"] and b["images"][0].startswith("data:image/jpeg;base64,")
+        res = {"kind": b["kind"], "engine": "workers-ai", "result": SCAN_RECIPE if b["kind"] == "recipe" else SCAN_LABEL}
+    route.fulfill(status=200, content_type="application/json", body=json.dumps(res))
+
 def remote_doc():
     return json.loads(base64.b64decode(GH["files"]["data.json"][0]))
 
@@ -77,6 +126,7 @@ with sync_playwright() as p:
         ctx.route("https://api.github.com/**", handle_gh)
         ctx.route("https://api.nal.usda.gov/**", handle_usda)
         ctx.route("https://fonts.googleapis.com/**", lambda r, q: r.fulfill(status=200, content_type="text/css", body=""))
+        ctx.route(BASE + "api/scan", handle_scan)
         pg = ctx.new_page()
         pg.on("pageerror", lambda e: errors.append(str(e)))
         pg.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
@@ -122,24 +172,110 @@ with sync_playwright() as p:
     pg.click(".combo >> nth=0 >> text=Open in day builder"); pg.wait_for_timeout(800)
     pg.screenshot(path=f"{OUT}/07-builder.png", full_page=True)
 
-    # recipes + editor + new recipe
-    pg.goto(BASE + "#recipes"); pg.wait_for_timeout(400); pg.screenshot(path=f"{OUT}/08-recipes.png")
-    pg.click(".rcard >> nth=2"); pg.wait_for_timeout(800); pg.screenshot(path=f"{OUT}/09-editor.png")
+    # recipes: three views, recipe page, editor
+    PHOTO = os.path.join(ROOT, "assets", "icon-512.png")
+    pg.goto(BASE + "#recipes"); pg.wait_for_timeout(1500); pg.screenshot(path=f"{OUT}/08-recipes.png")
+    assert pg.locator(".pcard").count() == 16
+    pg.click(".viewswitch button:has-text('Advanced')"); pg.wait_for_timeout(300)
+    assert pg.locator(".acard .aa").count() >= 8, "amino acid mini-bars under protein (after backfill)"
+    pg.screenshot(path=f"{OUT}/08b-advanced.png")
+    pg.click(".adv-head button:has-text('Minerals')"); pg.wait_for_timeout(200)
+    assert "Iron" in pg.inner_text(".acard >> nth=0")
+    pg.click(".viewswitch button:has-text('List')"); pg.wait_for_timeout(200)
+    pg.screenshot(path=f"{OUT}/08c-list.png")
+    pg.click(".ltable th >> nth=4 >> button"); pg.wait_for_timeout(200)   # sort by protein
+    prot = pg.eval_on_selector_all(".ltable tbody td:nth-child(5)", "els => els.map(e => parseFloat(e.textContent))")
+    assert prot == sorted(prot, reverse=True), prot
+    pg.click(".viewswitch button:has-text('Simple')")
+    pg.click(".pcard >> nth=2"); pg.wait_for_selector(".detail-title"); pg.wait_for_timeout(300)
+    rid = pg.evaluate("location.hash.split('/')[1]")
+    pg.click(".detail-meta .stars button >> nth=3"); pg.wait_for_timeout(500)   # 4 stars from the recipe page
+    assert pg.evaluate(f"Z.store.S.doc.recipes.find(r => r.id === '{rid}').rating") == 4
+    pg.screenshot(path=f"{OUT}/09-recipe-page.png", full_page=True)
+    pg.click(".detail-bar >> text=Edit"); pg.wait_for_timeout(800); pg.screenshot(path=f"{OUT}/09b-editor.png")
     # every ingredient line shows its name and its household unit (regression: blank names / "g")
-    names = pg.eval_on_selector_all(".ing-pick input", "els => els.map(e => e.value)")
+    names = pg.eval_on_selector_all(".ing-line:not(.head) .ing-pick input", "els => els.map(e => e.value)")
     units = pg.eval_on_selector_all(".ing-line select", "els => els.map(e => e.value)")
     assert names and all(names), names
     assert any(u not in ("g", "oz", "lb") for u in units), units
-    pg.keyboard.press("Escape")
-    pg.click("text=New recipe"); pg.fill(".drawer input >> nth=0", "Test lentil bowl")
-    pg.click("text=Add ingredient >> nth=0"); pg.click(".ing-pick input"); pg.fill(".ing-pick input", "lent")
+    # add a photo, description, a link and an attachment
+    pg.set_input_files(".padd input", PHOTO); pg.wait_for_selector(".pthumb img", timeout=10000)
+    pg.fill("textarea >> nth=0", "Our favourite Sunday bowl.")
+    pg.click("text=Add link"); pg.fill(".link-line input >> nth=0", "Original"); pg.fill(".link-line input >> nth=1", "https://example.com/recipe")
+    pg.set_input_files(".panel:has-text('Attachments') input[type=file]", {"name": "card.txt", "mimeType": "text/plain", "buffer": b"Grandma's card"})
+    pg.wait_for_selector(".filerow", timeout=5000)
+    pg.click(".drawer-head .btn.primary"); pg.wait_for_selector(".detail .hero img", timeout=10000); pg.wait_for_timeout(2500)
+    pg.screenshot(path=f"{OUT}/09c-recipe-photo.png")
+    rr = next(r for r in remote_doc()["recipes"] if r["id"] == rid)
+    assert rr["description"] == "Our favourite Sunday bowl." and rr["links"][0]["url"] == "https://example.com/recipe" and rr["rating"] == 4
+    assert len(rr["photos"]) == 1 and len(rr["attachments"]) == 1
+    assert rr["photos"][0]["path"] in GH["files"] and rr["photos"][0]["thumb"] in GH["files"], "photo uploaded to the data repo"
+    assert rr["attachments"][0]["path"] in GH["files"]
+    # print view
+    pg.evaluate("() => { window.print = () => { window.__printed = (window.__printed || 0) + 1; }; }")
+    pg.click(".detail-bar >> text=Print"); pg.wait_for_timeout(600)
+    assert pg.evaluate("window.__printed") == 1 and pg.locator("#print-root .pr-ing li").count() > 3
+    pg.emulate_media(media="print"); pg.screenshot(path=f"{OUT}/09d-print.png", full_page=True); pg.emulate_media(media="screen")
+    pg.evaluate("window.dispatchEvent(new Event('afterprint'))")
+
+    # new recipe by hand
+    pg.goto(BASE + "#recipes"); pg.wait_for_timeout(300)
+    pg.click(".page-head >> text=New recipe"); pg.fill(".drawer .field:has-text('Name') input", "Test lentil bowl")
+    pg.click(".drawer >> text=Add ingredient"); pg.click(".ing-line:not(.head) .ing-pick input"); pg.fill(".ing-line:not(.head) .ing-pick input", "lent")
     pg.click(".ing-pick .menu button >> nth=0"); pg.wait_for_timeout(600)
-    pg.click("text=Add recipe"); pg.wait_for_timeout(2500)
+    pg.click(".drawer-head .btn.primary"); pg.wait_for_timeout(2500)
     assert any(r["name"] == "Test lentil bowl" for r in remote_doc()["recipes"])
+
+    # scan a recipe
+    pg.goto(BASE + "#recipes"); pg.wait_for_timeout(300)
+    pg.click(".page-head >> text=Scan a recipe")
+    pg.set_input_files(".scan-pick label:nth-child(2) input", PHOTO)
+    pg.click(".modal .drawer-foot .btn.primary"); pg.wait_for_selector(".drawer-head h2:text('Draft recipe')", timeout=15000); pg.wait_for_timeout(800)
+    pg.screenshot(path=f"{OUT}/15-scan-draft.png")
+    assert pg.input_value(".drawer .field:has-text('Name') input") == "Smoky Lentil Stew"
+    flags = pg.eval_on_selector_all(".ing-line .conf", "els => els.map(e => e.textContent)")
+    print("scan flags:", flags)
+    assert "matched" in flags and "new" in flags, flags
+    pg.click(".drawer-head .btn.primary"); pg.wait_for_selector(".detail-title", timeout=10000); pg.wait_for_timeout(2500)
+    sr = next(r for r in remote_doc()["recipes"] if r["name"] == "Smoky Lentil Stew")
+    assert any(l.get("name") == "smoked paprika" and not l.get("ingredient_id") for l in sr["ingredients"]), "unmatched line kept"
+    assert sr["attachments"] and sr["attachments"][0]["name"].startswith("Scanned page")
+    assert pg.locator(".ingl li.unlinked").count() >= 1
+    pg.screenshot(path=f"{OUT}/15b-scanned-recipe.png")
+
+    # scan a nutrition label from the pantry
+    pg.goto(BASE + "#pantry"); pg.wait_for_timeout(300)
+    pg.click(".page-head >> text=Add ingredient"); pg.click("text=From a nutrition label"); pg.click("text=Scan the label")
+    pg.set_input_files(".scan-pick label:nth-child(2) input", PHOTO)
+    pg.click(".modal .drawer-foot .btn.primary"); pg.wait_for_selector(".modal h2:text('Check the label')", timeout=15000); pg.wait_for_timeout(300)
+    pg.screenshot(path=f"{OUT}/16-label-review.png")
+    pg.click(".modal .btn.primary:has-text('Add to pantry')"); pg.wait_for_timeout(2500)
+    soy = next(i for i in remote_doc()["ingredients"] if i["name"] == "Soy milk, unsweetened")
+    assert abs(soy["nutrients"]["protein"] - 7 * 100 / 240) < 0.01 and abs(soy["nutrients"]["b12"] - 2.4 * 1.2 * 100 / 240) < 0.01, soy["nutrients"]
+    assert soy["portions"][0]["grams"] == 240
 
     # prep + settings
     pg.goto(BASE + "#prep"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/10-prep.png", full_page=True)
+    assert pg.locator(".prep-tl .lane").count() >= 2 and "start to finish" in pg.inner_text(".prep-tl")
+
+    # tracker: today is pre-filled from the plan; check things off
+    pg.goto(BASE + "#tracker"); pg.wait_for_selector(".meals", timeout=10000); pg.wait_for_timeout(300)
+    n_items = pg.locator(".meal").count()
+    pg.click("text=Ate everything"); pg.wait_for_timeout(800)
+    today = pg.evaluate("Z.tracker.dayKey(new Date())")
+    score = pg.evaluate(f"Z.store.S.doc.logs.find(l => l.date === '{today}').score")
+    print("tracker items", n_items, "score", score)
+    assert n_items >= 2 and score > 0
+    # fill four good weeks this month directly, to see cheeks and a sticker
+    pg.evaluate("""() => { const T = Z.tracker; const s = T.weekStart(T.dayKey(new Date()), 'Monday');
+      for (let w = 1; w <= 8; w++) for (let d = 0; d < 6; d++) { const k = T.addDays(s, -7 * w + d);
+        Z.store.upsert('logs', { id: 'log-' + k, date: k, items: [], score: 88 + d, eaten: 3 }); } }""")
+    pg.evaluate("S.trk = null"); pg.goto(BASE + "#plan"); pg.goto(BASE + "#tracker"); pg.wait_for_selector(".cheeks", timeout=10000); pg.wait_for_timeout(400)
+    pg.screenshot(path=f"{OUT}/17-tracker.png", full_page=True)
+    assert pg.locator(".cheeks .w.done").count() >= 2 and pg.locator(".shelf .sticker:not(.empty)").count() >= 1
     pg.goto(BASE + "#settings"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/11-settings.png")
+    pg.click("text=Check scanning"); pg.wait_for_timeout(500)
+    assert "Scanning works" in pg.inner_text(".panel:has-text('Scanning')")
     link = pg.evaluate("Z.store.setupLink()")
     assert "#connect=" in link
 
@@ -150,7 +286,15 @@ with sync_playwright() as p:
     print("phone scrollWidth", ph.evaluate("document.documentElement.scrollWidth"))
     ph.screenshot(path=f"{OUT}/12-phone.png")
     assert ph.inner_text(".panel-head .muted.small") == chosen, "phone shows the same chosen week"
-    ph.goto(BASE + "#recipes"); ph.wait_for_timeout(500); ph.screenshot(path=f"{OUT}/13-phone-recipes.png")
+    ph.goto(BASE + "#recipes"); ph.wait_for_timeout(1500); ph.screenshot(path=f"{OUT}/13-phone-recipes.png")
+    # the photo uploaded on the desktop downloads on the phone
+    ph.goto(BASE + "#recipe/" + rid); ph.wait_for_selector(".hero img[src^='blob:']", timeout=10000); ph.wait_for_timeout(400)
+    print("phone scrollWidth (recipe)", ph.evaluate("document.documentElement.scrollWidth"))
+    ph.screenshot(path=f"{OUT}/13b-phone-recipe.png", full_page=True)
+    ph.goto(BASE + "#tracker"); ph.wait_for_selector(".cheeks", timeout=10000); ph.wait_for_timeout(500)
+    print("phone scrollWidth (tracker)", ph.evaluate("document.documentElement.scrollWidth"))
+    assert ph.evaluate("document.documentElement.scrollWidth") <= 390, "no sideways scrolling on the phone"
+    ph.screenshot(path=f"{OUT}/13c-phone-tracker.png", full_page=True)
 
     # concurrent edit merge: phone renames a recipe while desktop adds a supplement
     ph.goto(BASE + "#settings"); ph.wait_for_timeout(300)

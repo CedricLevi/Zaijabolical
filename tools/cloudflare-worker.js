@@ -3,8 +3,8 @@
  *
  * Your main site is untouched: this Worker only answers requests whose path starts
  * with /zaijabolical (that's the route you attach it to). It fetches the app from its
- * own Cloudflare Pages address and, at /zaijabolical/usda/..., relays nutrition lookups
- * to USDA FoodData Central in case a browser blocks calling USDA directly.
+ * own Cloudflare Pages address (including the photo scanner at /zaijabolical/api/scan) and, at
+ * /zaijabolical/usda/..., relays nutrition lookups to USDA FoodData Central in case a browser blocks calling USDA directly.
  * No keys or data are stored here.
  */
 const APP = "https://zaijabolical.pages.dev";   // the app's Cloudflare Pages address
@@ -28,7 +28,9 @@ export default {
     }
 
     // the app itself
-    const r = await fetch(APP + rest + url.search, { method: request.method, headers: request.headers, redirect: "manual" });
+    const hasBody = !["GET", "HEAD"].includes(request.method);   // e.g. a photo sent to /zaijabolical/api/scan
+    const r = await fetch(APP + rest + url.search, { method: request.method, headers: request.headers, redirect: "manual",
+      body: hasBody ? request.body : undefined });
     const loc = r.headers.get("location");
     if (r.status >= 300 && r.status < 400 && loc) {   // keep Pages' own redirects under /zaijabolical
       const to = new URL(loc, APP);

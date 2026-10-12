@@ -40,8 +40,9 @@
   function recipeMap() { return Object.fromEntries(doc().recipes.map(r => [r.id, r])); }
   function recipeOut(r, ingById) {
     const nut = Z.recipeNutrition(r, ingById);
+    const unlinked = (r.ingredients || []).filter(l => !ingById[l.ingredient_id] && l.name).length;
     return { ...clone(r), nutrition: { per_serving: nut.per_serving, missing: nut.missing,
-      grams_per_serving: nut.grams_per_serving, problems: nut.problems } };
+      grams_per_serving: nut.grams_per_serving, problems: nut.problems, amino: Z.recipeAmino(r, ingById, 1), unlinked } };
   }
   const activeRecipes = () => doc().recipes.filter(r => r.active !== false && (r.ingredients || []).length);
   const seededKeys = () => Object.fromEntries(doc().ingredients.filter(i => i.seed_key).map(i => [i.seed_key, i]));
@@ -172,12 +173,22 @@
     r.max_per_day = Number(r.max_per_day) || 2;
     r.freezes = r.freezes !== false; r.active = r.active !== false; r.favorite = !!r.favorite;
     r.tags = r.tags || []; r.notes = r.notes || ""; r.steps = r.steps || ""; r.category = r.category || "Main";
-    r.ingredients = (r.ingredients || []).filter(l => l.ingredient_id);
+    r.description = String(r.description || "");
+    r.rating = Math.max(0, Math.min(5, Math.round(Number(r.rating) || 0)));
+    r.links = (r.links || []).map(l => ({ title: String(l.title || "").trim(), url: String(l.url || "").trim() }))
+      .filter(l => /^https?:\/\/[^\s]+$/i.test(l.url));   // only web links: nothing that could run script
+    r.photos = (r.photos || []).filter(p => p && p.path);
+    r.attachments = (r.attachments || []).filter(a => a && a.path);
+    // a line needs a pantry ingredient, or at least a name (scanned lines waiting to be linked)
+    r.ingredients = (r.ingredients || []).filter(l => l.ingredient_id || String(l.name || "").trim())
+      .map(l => (l.ingredient_id ? { ingredient_id: l.ingredient_id, amount: l.amount, unit: l.unit, note: l.note || "" }
+        : { ingredient_id: null, name: String(l.name).trim(), amount: l.amount, unit: l.unit || "", note: l.note || "" }));
     return r;
   }
   function cleanIngredient(d) {
     if (!String(d.name || "").trim()) throw new ApiError("Name is required");
     const i = clone(d); i.name = i.name.trim(); i.nutrients = i.nutrients || {}; i.portions = i.portions || [];
+    for (const [k, v] of Object.entries(i.nutrients)) if (v === "" || v == null || !isFinite(Number(v))) delete i.nutrients[k]; else i.nutrients[k] = Number(v);
     i.aisle = i.aisle || "Other"; i.source = i.source || "manual"; i.verify = !!i.verify;
     return i;
   }
@@ -220,7 +231,18 @@
 
   route("POST", "/api/recipes", (p, body) => recipeOut(store().upsert("recipes", cleanRecipe(body)), ingMap()));
   route("PUT", "/api/recipes/:id", (p, body) => recipeOut(store().upsert("recipes", cleanRecipe({ ...body, id: p.id })), ingMap()));
-  route("DELETE", "/api/recipes/:id", p => { store().remove("recipes", p.id); return { ok: true }; });
+  route("DELETE", "/api/recipes/:id", p => {
+    const r = doc().recipes.find(x => x.id === p.id);
+    if (r && Z.media) for (const m of [...(r.photos || []), ...(r.attachments || [])]) Z.media.remove(m);
+    store().remove("recipes", p.id); return { ok: true };
+  });
+  route("PATCH", "/api/recipes/:id", (p, body) => {   // small edits from the recipe page (rating)
+    const r = doc().recipes.find(x => x.id === p.id);
+    if (!r) throw new ApiError("Not found", 404);
+    const next = clone(r);
+    if ("rating" in body) next.rating = body.rating;
+    return recipeOut(store().upsert("recipes", cleanRecipe(next)), ingMap());
+  });
   route("POST", "/api/recipes/preview", (p, body) => recipeOut(body, ingMap()).nutrition);
 
   route("POST", "/api/evaluate", (p, body) => {
@@ -296,6 +318,98 @@
   route("POST", "/api/seed/match", (p, body) => seedMatch(body.key));
   route("POST", "/api/seed/commit", (p, body) => seedCommit(body.selections || []));
 
+  // ---------------- tracker ----------------
+  function evalItems(items) {
+    const s = settings(), ing = ingMap(), rec = recipeMap(), trip = [], pairs = [];
+    let eaten = 0;
+    for (const it of items || []) {
+      if (it.eaten === false) continue;
+      if (it.recipe_id) {
+        const r = rec[it.recipe_id], sv = Number(it.servings) || 0;
+        if (!r || sv <= 0) continue;
+        const nut = Z.recipeNutrition(r, ing); trip.push([nut.per_serving, nut.missing, sv]); eaten++;
+        const div = (Number(r.servings) || 1) / sv;
+        for (const l of r.ingredients || []) if (ing[l.ingredient_id]) pairs.push([ing[l.ingredient_id], Z.toGrams(l.amount, l.unit, ing[l.ingredient_id]) / div]);
+      } else if (it.ingredient_id) {
+        const i = ing[it.ingredient_id];
+        if (!i) continue;
+        const g = Z.toGrams(it.amount, it.unit, i);
+        if (!(g > 0)) continue;
+        const per = {}, miss = {};
+        for (const k of Z.KEYS) { const v = i.nutrients[k]; per[k] = v == null ? 0 : v * g / 100; miss[k] = v == null ? 1 : 0; }
+        trip.push([per, miss, 1]); pairs.push([i, g]); eaten++;
+      }
+    }
+    const [food, missing] = Z.combine(trip);
+    const rows = Z.evaluate(food, Z.supplementTotals(s.supplements), s.targets, missing);
+    return { rows, score: eaten ? Z.score(rows) : null, eaten, advice: Z.recommendations(rows), amino: Z.aminoFromGrams(pairs) };
+  }
+  const logId = date => "log-" + date;
+  function plannedFor(date) {
+    const cw = doc().current_week;
+    if (!cw || !cw.week) return [];
+    const name = Z.tracker.weekdayName(date);
+    const d = cw.week.days.find(x => x.day === name);
+    return d ? d.items.filter(i => recipeMap()[i.recipe_id]).map(i => ({ recipe_id: i.recipe_id, servings: i.servings, eaten: false, planned: true })) : [];
+  }
+  route("GET", "/api/logs", () => doc().logs.map(l => ({ date: l.date, score: l.score, eaten: l.eaten })));
+  route("GET", "/api/logs/:date", p => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new ApiError("Bad date");
+    const l = doc().logs.find(x => x.id === logId(p.date));
+    const items = l ? clone(l.items) : plannedFor(p.date);
+    return { date: p.date, items, saved: !!l, ...evalItems(items) };
+  });
+  route("PUT", "/api/logs/:date", (p, body) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new ApiError("Bad date");
+    const items = (body.items || []).map(it => (it.recipe_id
+      ? { recipe_id: String(it.recipe_id), servings: Math.max(0, Number(it.servings) || 0), eaten: it.eaten !== false, planned: !!it.planned }
+      : { ingredient_id: String(it.ingredient_id), amount: Math.max(0, Number(it.amount) || 0), unit: it.unit || "g", eaten: it.eaten !== false }))
+      .filter(it => it.recipe_id || it.ingredient_id);
+    const ev = evalItems(items);
+    store().upsert("logs", { id: logId(p.date), date: p.date, items, score: ev.score, eaten: ev.eaten });
+    return { date: p.date, items, saved: true, ...ev };
+  });
+
+  // ---------------- amino acids for ingredients added before they were tracked ----------------
+  route("POST", "/api/usda/amino-backfill", async () => {
+    if (!settings().usda_api_key) return { updated: 0, left: 0 };
+    const todo = doc().ingredients.filter(i => i.fdc_id && i.source === "usda" && !i.aa_checked && (i.nutrients || {}).aa_lys == null);
+    const batch = todo.slice(0, 20);
+    if (!batch.length) return { updated: 0, left: 0 };
+    const foods = await usdaFetch("/foods", { fdcIds: batch.map(i => Number(i.fdc_id)), format: "full" });
+    const byId = Object.fromEntries((foods || []).map(f => [String(f.fdcId), f]));
+    let updated = 0;
+    for (const i of batch) {
+      const f = byId[String(i.fdc_id)];
+      const next = clone(i);
+      next.aa_checked = true;
+      if (f) {
+        const nut = Z.parseUsdaNutrients(f.foodNutrients);
+        for (const k of Z.AA_KEYS) if (nut[k] != null) next.nutrients[k] = nut[k];
+        if (next.nutrients.aa_lys != null) updated++;
+      }
+      store().upsert("ingredients", next);
+    }
+    return { updated, left: todo.length - batch.length };
+  });
+
+  // ---------------- scanning (runs on the site's Cloudflare function) ----------------
+  route("POST", "/api/scan", async (p, body) => {
+    const gh = store().S.github;
+    if (!gh) throw new ApiError("Scanning needs this device to be connected to your GitHub data repo (Settings → Sync).");
+    let res;
+    try {
+      res = await fetch("api/scan", { method: "POST", cache: "no-store",
+        headers: { "Content-Type": "application/json", "X-Zaija-Key": gh.token, "X-Zaija-Repo": `${gh.owner}/${gh.repo}` },
+        body: JSON.stringify({ kind: body.kind, images: body.images || [] }) });
+    } catch { throw new ApiError("Couldn't reach the scanner. Check your internet connection (scanning only works on the website)."); }
+    let data = null;
+    try { data = await res.json(); } catch { /* not json */ }
+    if (!res.ok || !data) throw new ApiError((data && data.error) || (res.status === 404 || res.status === 405
+      ? "Scanning isn't switched on for the website yet (see the README's “Scanning” section)." : `Scanning failed (${res.status}).`), res.status);
+    return data;
+  });
+
   route("GET", "/api/export", () => {
     const d = clone(doc());
     d.settings.usda_api_key = "";
@@ -328,5 +442,5 @@
     throw new ApiError(`Unknown request ${method} ${url}`, 404);
   }
 
-  Z.api = { request, ApiError, compute, usdaSearch, usdaFood };
+  Z.api = { request, ApiError, compute, usdaSearch, usdaFood, evalItems };
 })(globalThis.Z = globalThis.Z || {});

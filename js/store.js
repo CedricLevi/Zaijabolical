@@ -23,7 +23,7 @@
     const s = JSON.parse(JSON.stringify(Z.DEFAULT_SETTINGS));
     s.targets = Z.defaultTargets();
     return { version: 1, settings: s, settings_ts: {}, ingredients: [], recipes: [], plans: [],
-      current_week: null, week_options: null, deleted: {} };
+      current_week: null, week_options: null, logs: [], deleted: {} };
   }
 
   // ---------------- merge (newest edit wins, per record) ----------------
@@ -48,6 +48,7 @@
       ingredients: mergeList(a.ingredients, b.ingredients, deleted),
       recipes: mergeList(a.recipes, b.recipes, deleted),
       plans: mergeList(a.plans, b.plans, deleted),
+      logs: mergeList(a.logs, b.logs, deleted),
       current_week: pick("current_week"), week_options: pick("week_options"),
     };
   }
@@ -58,6 +59,8 @@
     const t = Z.defaultTargets(); Object.assign(t, doc.settings.targets || {}); doc.settings.targets = t;
     doc.settings.structure = Object.assign({}, Z.DEFAULT_SETTINGS.structure, doc.settings.structure || {});
     doc.settings.week = Object.assign({}, Z.DEFAULT_SETTINGS.week, doc.settings.week || {});
+    for (const k of ["profile", "tracker"]) doc.settings[k] = Object.assign({}, Z.DEFAULT_SETTINGS[k], doc.settings[k] || {});
+    if (!Array.isArray(doc.logs)) doc.logs = [];
     return doc;
   }
 

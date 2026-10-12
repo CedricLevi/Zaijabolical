@@ -15,6 +15,31 @@
   }
   const EPA_DHA_IDS = new Set([1278, 1272]), EPA_DHA_NUMS = new Set(["629", "621"]);
 
+  // ---------------- amino acids ----------------
+  // Stored on ingredients as nutrients.aa_* in grams per 100 g (USDA's unit). Kept out of NUTRIENTS on purpose,
+  // so they never change plan scores; they're shown as a protein-quality view.
+  const AA_RAW = [   // key, USDA nutrient number, USDA name
+    ["aa_trp", "501", "tryptophan"], ["aa_thr", "502", "threonine"], ["aa_ile", "503", "isoleucine"], ["aa_leu", "504", "leucine"],
+    ["aa_lys", "505", "lysine"], ["aa_met", "506", "methionine"], ["aa_cys", "507", "cystine"], ["aa_phe", "508", "phenylalanine"],
+    ["aa_tyr", "509", "tyrosine"], ["aa_val", "510", "valine"], ["aa_his", "512", "histidine"],
+  ];
+  const AA_KEYS = AA_RAW.map(a => a[0]);
+  const AA_BY_NUM = Object.fromEntries(AA_RAW.map(a => [a[1], a[0]]));
+  const AA_BY_NAME = Object.fromEntries(AA_RAW.map(a => [a[2], a[0]]));
+  // The nine essential amino acids as shown. ref = WHO/FAO/UNU (2007) adult scoring pattern, mg per g protein;
+  // req = adult requirement, mg per kg body weight per day (same report).
+  const AMINO = [
+    { id: "his", abbr: "His", name: "Histidine", keys: ["aa_his"], ref: 15, req: 10 },
+    { id: "ile", abbr: "Ile", name: "Isoleucine", keys: ["aa_ile"], ref: 30, req: 20 },
+    { id: "leu", abbr: "Leu", name: "Leucine", keys: ["aa_leu"], ref: 59, req: 39 },
+    { id: "lys", abbr: "Lys", name: "Lysine", keys: ["aa_lys"], ref: 45, req: 30 },
+    { id: "saa", abbr: "Met", name: "Methionine + cysteine", keys: ["aa_met", "aa_cys"], ref: 22, req: 15 },
+    { id: "aaa", abbr: "Phe", name: "Phenylalanine + tyrosine", keys: ["aa_phe", "aa_tyr"], ref: 38, req: 25 },
+    { id: "thr", abbr: "Thr", name: "Threonine", keys: ["aa_thr"], ref: 23, req: 15 },
+    { id: "trp", abbr: "Trp", name: "Tryptophan", keys: ["aa_trp"], ref: 6, req: 4 },
+    { id: "val", abbr: "Val", name: "Valine", keys: ["aa_val"], ref: 39, req: 26 },
+  ];
+
   /** USDA `foodNutrients` list -> {key: value per 100 g}. Missing = unknown (absent), not zero. */
   function parseUsdaNutrients(list) {
     const best = {};
@@ -22,11 +47,14 @@
     for (const fn of list || []) {
       const nested = fn.nutrient || {};
       const nid = fn.nutrientId ?? nested.id;
-      const num = String(fn.nutrientNumber ?? nested.number ?? "");
+      const num = String(fn.nutrientNumber ?? nested.number ?? fn.number ?? "");
       let val = fn.value ?? fn.amount;
       if (val == null) continue;
       val = Number(val);
       if (!isFinite(val)) continue;
+      const nm = String(fn.nutrientName ?? nested.name ?? fn.name ?? "").trim().toLowerCase();
+      const aa = AA_BY_NUM[num] || AA_BY_NAME[nm];
+      if (aa) { if (!(aa in best)) best[aa] = [0, val]; continue; }
       if (EPA_DHA_IDS.has(nid) || EPA_DHA_NUMS.has(num)) { epaDha = (epaDha || 0) + val * 1000; continue; }
       if (nid === 1110 || num === "324") { vitdIu = val; continue; }
       const hit = ID_MAP[nid] || NUM_MAP[num];
@@ -83,6 +111,38 @@
     const per = {}, missing = {};
     for (const k of KEYS) { per[k] = totals[k] / servings; missing[k] = totalG ? missingG[k] / totalG : 0; }
     return { per_serving: per, missing, total_grams: totalG, grams_per_serving: totalG / servings, problems };
+  }
+
+  /** Amino acids from a list of [ingredient, grams]. Returns per-acid grams plus a protein-quality %
+      (mg of the acid per g protein vs. the WHO reference). Ingredients without amino data are left out of the
+      quality figure, and `coverage` says what share of the protein had data. */
+  function aminoFromGrams(pairs) {
+    const tot = Object.fromEntries(AMINO.map(a => [a.id, 0]));
+    let protKnown = 0, protAll = 0;
+    for (const [ing, g] of pairs) {
+      const nut = (ing && ing.nutrients) || {};
+      const p = Number(nut.protein) || 0;
+      protAll += p * g / 100;
+      if (nut.aa_lys == null || nut.aa_lys === "") continue;
+      protKnown += p * g / 100;
+      for (const a of AMINO) for (const k of a.keys) tot[a.id] += (Number(nut[k]) || 0) * g / 100;
+    }
+    const coverage = protAll > 0 ? protKnown / protAll : 0;
+    const acids = AMINO.map(a => ({ id: a.id, abbr: a.abbr, name: a.name, grams: tot[a.id],
+      quality: protKnown > 0 ? tot[a.id] * 1000 / protKnown / a.ref * 100 : null, ref: a.ref, req: a.req }));
+    const known = acids.filter(a => a.quality != null);
+    const limiting = known.length ? known.reduce((m, a) => (a.quality < m.quality ? a : m)) : null;
+    return { acids, coverage, protein_known: protKnown, protein: protAll, has_data: coverage >= 0.5,
+      score: limiting ? Math.min(100, limiting.quality) : null, limiting: limiting ? limiting.id : null };
+  }
+  function recipeAmino(recipe, ingById, servings) {
+    const div = (Number(recipe.servings) || 1) / (servings || 1);
+    const pairs = [];
+    for (const item of recipe.ingredients || []) {
+      const ing = ingById[item.ingredient_id];
+      if (ing) pairs.push([ing, toGrams(item.amount, item.unit, ing) / div]);
+    }
+    return aminoFromGrams(pairs);
   }
 
   function supplementTotals(supps) {
@@ -267,15 +327,29 @@
         fridge_servings: e.fridge.reduce((a, x) => a + x[1], 0), freezer_servings: e.freezer.reduce((a, x) => a + x[1], 0),
         thaw: e.freezer.map(([day, s]) => ({ day, servings: s })), freezes: !!r.freezes,
         minutes: (Number(r.prep_min) || 0) + (Number(r.cook_min) || 0), cook_min: Number(r.cook_min) || 0,
-        lines, steps: r.steps || "",
+        prep_min: Number(r.prep_min) || 0, lines, steps: r.steps || "",
       });
+    }
+    // lines typed in a recipe but not linked to a pantry ingredient still go on the shopping list
+    for (const [rid, e] of per) {
+      const r = recipesById[rid];
+      if (!r) continue;
+      const mult = Math.ceil(e.total / (Number(r.servings) || 1) * 4 - 1e-9) / 4;
+      for (const item of r.ingredients || []) {
+        if (ingById[item.ingredient_id] || !item.name) continue;
+        const k = "name:" + item.name.toLowerCase();
+        if (!shopping.has(k)) shopping.set(k, { ing: { id: k, name: item.name, aisle: "Other" }, grams: 0, recipes: new Set(), text: [] });
+        const s = shopping.get(k);
+        s.recipes.add(r.name);
+        if (item.amount) s.text.push(`${fmtAmt((Number(item.amount) || 0) * mult)} ${item.unit || ""}`.trim());
+      }
     }
     batches.sort((a, b) => b.cook_min - a.cook_min);
     const grouped = {};
     for (const s of shopping.values()) {
       const a = s.ing.aisle || "Other";
-      (grouped[a] = grouped[a] || []).push({ name: s.ing.name, grams: Math.round(s.grams), pretty: fmtG(s.grams),
-        portion: nicePortion(s.grams, s.ing), recipes: [...s.recipes].sort(), verify: !!s.ing.verify });
+      (grouped[a] = grouped[a] || []).push({ name: s.ing.name, grams: Math.round(s.grams), pretty: s.text ? (s.text.join(" + ") || "") : fmtG(s.grams),
+        portion: s.text ? null : nicePortion(s.grams, s.ing), recipes: [...s.recipes].sort(), verify: !!s.ing.verify });
     }
     const idx = a => { const i = AISLE_ORDER.indexOf(a); return i < 0 ? 99 : i; };
     const aisles = Object.keys(grouped).sort((a, b) => idx(a) - idx(b))
@@ -284,12 +358,40 @@
     const thaw = [];
     for (const b of batches) for (const t of b.thaw) thaw.push({ eat_day: t.day, recipe: b.name, servings: t.servings });
     thaw.sort((a, b) => (order[a.eat_day] ?? 9) - (order[b.eat_day] ?? 9) || a.recipe.localeCompare(b.recipe));
-    return { batches, shopping: aisles, thaw, total_minutes: batches.reduce((a, b) => a + b.minutes, 0) };
+    return { batches, shopping: aisles, thaw, total_minutes: batches.reduce((a, b) => a + b.minutes, 0),
+      schedule: buildSchedule(batches) };
+  }
+
+  /** Prep-day timeline for one cook: start the longest-cooking dish first, and do the next dish's hands-on
+      work while earlier ones simmer or bake. Prep time counts as hands-on, cook time as hands-off. */
+  function buildSchedule(batches) {
+    const cooked = batches.filter(b => b.minutes > 5)
+      .sort((a, b) => b.cook_min - a.cook_min || b.prep_min - a.prep_min);
+    let t = 0, lastDone = 0, handsTotal = 0;
+    const lanes = [], steps = [];
+    for (const b of cooked) {
+      const scale = 1 + 0.4 * Math.max(0, b.multiplier - 1);      // a double batch takes longer to chop, not twice as long
+      const hands = Math.max(5, Math.round(b.prep_min * scale / 5) * 5);
+      const start = t, handsEnd = t + hands, done = handsEnd + b.cook_min;
+      const blocks = [{ start, end: handsEnd, kind: "hands", label: "prep" }];
+      if (b.cook_min > 0) blocks.push({ start: handsEnd, end: done, kind: "wait", label: `cooks ${b.cook_min} min` });
+      lanes.push({ recipe_id: b.recipe_id, name: b.name, blocks });
+      steps.push({ at: start, recipe_id: b.recipe_id, name: b.name, hands, cook: b.cook_min, done });
+      handsTotal += hands; t = handsEnd; lastDone = Math.max(lastDone, done);
+    }
+    if (!cooked.length) return { lanes, steps, total: 0, hands_on: 0, pack: null };
+    const packStart = Math.max(t, lastDone), packMin = 5 + 3 * cooked.length;
+    const fridge = cooked.reduce((a, b) => a + b.fridge_servings, 0), freezer = cooked.reduce((a, b) => a + b.freezer_servings, 0);
+    lanes.push({ recipe_id: null, name: "Portion & pack", blocks: [{ start: packStart, end: packStart + packMin, kind: "hands", label: "fridge / freezer" }] });
+    handsTotal += packMin;
+    return { lanes, steps, total: packStart + packMin, hands_on: handsTotal,
+      pack: { at: packStart, minutes: packMin, fridge, freezer } };
   }
 
   Object.assign(Z, {
-    KEYS, BY_KEY, GROUPS, AISLES: AISLE_ORDER,
+    KEYS, BY_KEY, GROUPS, AISLES: AISLE_ORDER, AMINO, AA_KEYS,
     parseUsdaNutrients, defaultTargets, toGrams, recipeNutrition, supplementTotals, combine,
-    evaluate, averageRows, score, nutrientMeta, recommendations, buildPrep, statusFor,
+    evaluate, averageRows, score, nutrientMeta, recommendations, buildPrep, buildSchedule, statusFor,
+    aminoFromGrams, recipeAmino,
   });
 })(globalThis.Z = globalThis.Z || {});

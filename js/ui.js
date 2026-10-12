@@ -81,6 +81,7 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
+  tracker: Z.art.NAV_SQUIRREL,
 };
 
 /* ---------------- api ---------------- */
@@ -255,14 +256,15 @@ async function saveSetting(key, value) {
 
 /* ---------------- navigation ---------------- */
 const VIEWS = [
-  ["plan", "Plan", "plan"], ["recipes", "Recipes", "recipes"], ["pantry", "Pantry", "pantry"],
+  ["plan", "Plan", "plan"], ["recipes", "Recipes", "recipes"], ["tracker", "Tracker", "tracker"], ["pantry", "Pantry", "pantry"],
   ["prep", "Prep day", "prep"], ["settings", "Settings", "settings"],
 ];
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.querySelectorAll("a, .spacer, .theme-toggle, .sync-badge").forEach(n => n.remove());
   for (const [id, label, icon] of VIEWS) {
-    nav.append(h("a", { href: "#" + id, class: S.view === id ? "active" : "", "aria-current": S.view === id ? "page" : null },
+    const on = S.view === id || (id === "recipes" && S.view === "recipe");
+    nav.append(h("a", { href: "#" + id, class: on ? "active" : "", "aria-current": on ? "page" : null },
       svg(icon), label));
   }
   nav.append(h("div", { class: "spacer" }));
@@ -283,14 +285,18 @@ function route() {
     renderNav(); showConnect(false); return;
   }
   const v = (location.hash || "#plan").slice(1);
-  S.view = VIEWS.some(x => x[0] === v) ? v : "plan";
+  const m = /^recipe\/(.+)$/.exec(v);
+  if (m) { S.view = "recipe"; S.recipeId = decodeURIComponent(m[1]); }
+  else S.view = VIEWS.some(x => x[0] === v) ? v : "plan";
   render();
+  window.scrollTo(0, 0);
 }
 function render() {
   renderNav();
   const app = document.getElementById("app");
   app.replaceChildren();
-  const fn = { plan: viewPlan, recipes: viewRecipes, pantry: viewPantry, prep: viewPrep, settings: viewSettings }[S.view];
+  const fn = { plan: viewPlan, recipes: viewRecipes, recipe: () => viewRecipe(S.recipeId), tracker: viewTracker,
+    pantry: viewPantry, prep: viewPrep, settings: viewSettings }[S.view];
   app.append(fn());
 }
 function pageHead(title, sub, ...actions) {
@@ -602,169 +608,6 @@ function planBuild() {
 }
 
 /* ================================================================
-   RECIPES
-   ================================================================ */
-function viewRecipes() {
-  const root = h("div");
-  root.append(pageHead("Recipes", "Her cookbook. Numbers are per serving; the strip shows how much of her day one serving covers.",
-    h("button", { class: "btn primary", onclick: () => openRecipe(null) }, svg("plus"), "New recipe")));
-  const f = S.recipeFilter;
-  const seg = h("div", { class: "seg" });
-  for (const c of ["All", ...CATS]) seg.append(h("button", { class: f.cat === c ? "on" : "", onclick: () => { f.cat = c; render(); } }, c));
-  const search = h("input", { type: "search", placeholder: "Search recipes", value: f.q, "aria-label": "Search recipes",
-    oninput: debounce(e => { f.q = e.target.value; render(); document.querySelector(".toolbar input").focus(); }, 250) });
-  root.append(h("div", { class: "toolbar" }, search, seg));
-  const list = S.data.recipes.filter(r => (f.cat === "All" || r.category === f.cat) &&
-    (!f.q || r.name.toLowerCase().includes(f.q.toLowerCase()) || (r.tags || []).join(" ").toLowerCase().includes(f.q.toLowerCase())));
-  if (!S.data.recipes.length) {
-    root.append(h("div", { class: "empty" }, h("h2", null, "No recipes yet"),
-      h("p", null, "Write your first one, or import the 16 starter recipes from the Pantry page."),
-      h("div", { class: "row", style: { justifyContent: "center" } },
-        h("button", { class: "btn primary", onclick: () => openRecipe(null) }, "New recipe"),
-        h("a", { class: "btn", href: "#pantry" }, "Import starters"))));
-    return root;
-  }
-  if (!list.length) { root.append(h("p", { class: "muted" }, "No recipes match.")); return root; }
-  const cards = h("div", { class: "cards" });
-  for (const r of list) {
-    const per = r.nutrition.per_serving;
-    const rows = rowsFor(per).map(x => ({ ...x, status: x.kind === "limit" ? (x.pct > 50 ? "ok" : "good") : (x.pct >= 33 ? "good" : x.pct >= 15 ? "ok" : "low") }));
-    cards.append(h("button", { class: "rcard" + (r.active ? "" : " inactive"), onclick: () => openRecipe(r) },
-      h("div", { class: "rcard-top" }, h("h3", null, r.name), r.favorite ? svg("star", "star") : null),
-      h("div", { class: "tags" },
-        h("span", { class: "tag cat-" + r.category }, r.category),
-        h("span", { class: "tag" }, `${fmtServ(r.servings)} servings`),
-        r.freezes ? h("span", { class: "tag" }, svg("freezer"), "freezes") : h("span", { class: "tag" }, svg("fridge"), `${r.fridge_days} days`),
-        r.active ? null : h("span", { class: "tag" }, "not in plans")),
-      h("div", { class: "macros" },
-        h("span", null, h("b", null, fmt(per.kcal)), "kcal"), h("span", null, h("b", null, fmt(per.protein)), "protein"),
-        h("span", null, h("b", null, fmt(per.carbs)), "carbs"), h("span", null, h("b", null, fmt(per.fat)), "fat")),
-      fingerprint(rows)));
-  }
-  root.append(cards);
-  return root;
-}
-
-function openRecipe(r) {
-  const R = r ? JSON.parse(JSON.stringify(r)) : {
-    name: "", category: "Main", servings: 4, ingredients: [], steps: "", prep_min: 15, cook_min: 30,
-    fridge_days: 4, freezes: true, max_per_day: 2, tags: [], notes: "", active: true, favorite: false,
-  };
-  delete R.nutrition;
-  const live = h("div", { class: "panel live" });
-  const lines = h("div", { class: "ing-lines" });
-  const refresh = debounce(async () => {
-    const nut = await api("POST", "/api/recipes/preview", R);
-    const rows = rowsFor(nut.per_serving);
-    live.replaceChildren(
-      h("div", { class: "panel-head" }, h("h2", null, "One serving"), h("span", { class: "muted small" }, `${fmt(nut.grams_per_serving)} g`)),
-      macroLine(rows), h("div", { style: { margin: "10px 0 12px" } }, fingerprint(rows.map(x => ({ ...x, status: x.pct >= 33 ? "good" : x.pct >= 15 ? "ok" : "low" })), true)),
-      h("p", { class: "muted small" }, "Bars show the share of her full day's target in one serving; the tick marks 100% of the day."),
-      bars(rows, { preview: true, noLegend: true, hideDisabled: true, oneCol: true }),
-      ...(nut.problems.length ? [h("div", { class: "banner" }, svg("alert"), nut.problems.join("; "))] : []));
-  });
-  const ingOptions = () => S.data.ingredients;
-  const drawLines = () => {
-    lines.replaceChildren(h("div", { class: "ing-line muted small" }, h("span", null, "Ingredient"), h("span", null, "Amount"), h("span", null, "Unit"), h("span", { class: "note" }, "Note"), h("span")));
-    R.ingredients.forEach((line, idx) => lines.append(ingLine(line, idx)));
-  };
-  const ingLine = (line, idx) => {
-    const ing = ingById(line.ingredient_id);
-    const units = ["g", "oz", "lb", ...(ing ? ing.portions.map(p => p.label) : [])];
-    const unitSel = h("select", { onchange: e => { line.unit = e.target.value; refresh(); } },
-      units.map(u => h("option", { value: u, selected: (line.unit || "g") === u }, u)));
-    return h("div", { class: "ing-line" },
-      ingPicker(ing, picked => { line.ingredient_id = picked.id; line.unit = picked.portions[0] ? picked.portions[0].label : "g"; drawLines(); refresh(); }),
-      h("input", { type: "number", step: "any", min: 0, value: line.amount ?? "", "aria-label": "Amount", oninput: e => { line.amount = +e.target.value; refresh(); } }),
-      unitSel,
-      h("input", { type: "text", class: "note", value: line.note || "", placeholder: "diced…", "aria-label": "Note", oninput: e => { line.note = e.target.value; } }),
-      h("button", { class: "icon-btn", "aria-label": "Remove ingredient", onclick: () => { R.ingredients.splice(idx, 1); drawLines(); refresh(); } }, svg("x")));
-  };
-  const ingPicker = (current, onPick) => {
-    const wrap = h("div", { class: "ing-pick" });
-    const input = h("input", { type: "text", value: current ? current.name : "", placeholder: "Search pantry…", "aria-label": "Ingredient" });
-    const menu = h("div", { class: "menu hidden" });
-    const show = () => {
-      const q = input.value.toLowerCase().trim();
-      const hits = ingOptions().filter(i => !q || i.name.toLowerCase().includes(q)).slice(0, 30);
-      menu.replaceChildren(...hits.map(i => h("button", { type: "button", onmousedown: e => { e.preventDefault(); input.value = i.name; menu.classList.add("hidden"); onPick(i); } }, i.name)),
-        h("button", { type: "button", class: "new", onmousedown: e => { e.preventDefault(); menu.classList.add("hidden"); openAddIngredient(q, ing => onPick(ing)); } },
-          q ? `+ Add “${input.value}” to pantry` : "+ Add a new ingredient"));
-      menu.classList.remove("hidden");
-    };
-    input.addEventListener("focus", show);
-    input.addEventListener("input", show);
-    input.addEventListener("blur", () => setTimeout(() => menu.classList.add("hidden"), 120));
-    wrap.append(input, menu);
-    return wrap;
-  };
-  drawLines();
-  const fld = (label, el) => h("label", { class: "field" }, h("span", null, label), el);
-  const bind = (key, type = "text", extra = {}) => h(type === "textarea" ? "textarea" : "input", {
-    type: type === "textarea" ? null : type, value: R[key] ?? "", ...extra,
-    oninput: e => { R[key] = type === "number" ? +e.target.value : e.target.value; if (key === "servings") refresh(); } });
-  const form = h("div", null,
-    h("div", { class: "panel" },
-      fld("Name", bind("name", "text", { placeholder: "e.g. Smoky lentil stew" })),
-      h("div", { class: "grid4", style: { marginTop: "12px" } },
-        fld("Category", h("select", { onchange: e => { R.category = e.target.value; } }, CATS.map(c => h("option", { selected: R.category === c }, c)))),
-        fld("Servings (batch)", bind("servings", "number", { min: 0.5, step: 0.5 })),
-        fld("Prep (min)", bind("prep_min", "number", { min: 0 })),
-        fld("Cook (min)", bind("cook_min", "number", { min: 0 }))),
-      h("div", { class: "grid4", style: { marginTop: "12px" } },
-        fld("Fridge life (days)", bind("fridge_days", "number", { min: 0, max: 30 })),
-        fld("Max servings/day", bind("max_per_day", "number", { min: 0.5, step: 0.5 })),
-        h("label", { class: "check", style: { alignSelf: "end", paddingBottom: "8px" } },
-          h("input", { type: "checkbox", checked: R.freezes, onchange: e => { R.freezes = e.target.checked; } }), "Freezes well"),
-        h("label", { class: "check", style: { alignSelf: "end", paddingBottom: "8px" } },
-          h("input", { type: "checkbox", checked: R.favorite, onchange: e => { R.favorite = e.target.checked; } }), "Favorite"))),
-    h("div", { class: "panel" },
-      h("div", { class: "panel-head" }, h("h2", null, "Ingredients"),
-        h("button", { class: "btn sm", onclick: () => { R.ingredients.push({ ingredient_id: null, amount: 100, unit: "g", note: "" }); drawLines(); lines.querySelector(".ing-line:last-child input").focus(); } }, svg("plus"), "Add ingredient")),
-      lines,
-      h("p", { class: "muted small", style: { marginTop: "10px" } }, "Units come from each ingredient's portion sizes (edit them on the Pantry page). Grams are always most accurate.")),
-    h("div", { class: "panel" },
-      fld("Steps", bind("steps", "textarea", { placeholder: "1. …\n2. …", rows: 8 })),
-      h("div", { class: "grid2", style: { marginTop: "12px" } },
-        fld("Tags (comma separated)", h("input", { type: "text", value: (R.tags || []).join(", "), oninput: e => { R.tags = e.target.value.split(",").map(s => s.trim()).filter(Boolean); } })),
-        fld("Notes", bind("notes"))),
-      h("label", { class: "check", style: { marginTop: "12px" } },
-        h("input", { type: "checkbox", checked: R.active, onchange: e => { R.active = e.target.checked; } }), "Use this recipe in plans")));
-
-  const close = () => scrim.remove();
-  const save = async () => {
-    if (!R.name.trim()) { toast("Give the recipe a name", true); return; }
-    R.ingredients = R.ingredients.filter(l => l.ingredient_id);
-    try {
-      await api(R.id ? "PUT" : "POST", R.id ? `/api/recipes/${R.id}` : "/api/recipes", R);
-      await reload(); close(); toast(R.id ? "Recipe saved" : "Recipe added"); render();
-    } catch (e) { toast(e.message, true); }
-  };
-  const scrim = h("div", { class: "scrim", onclick: e => { if (e.target === scrim) close(); } },
-    h("div", { class: "drawer", role: "dialog", "aria-modal": "true", "aria-label": "Recipe editor" },
-      h("div", { class: "drawer-head" }, h("h2", null, r ? "Edit recipe" : "New recipe"),
-        h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, svg("x"))),
-      h("div", { class: "drawer-body" }, h("div", { class: "editor" }, form, live)),
-      h("div", { class: "drawer-foot" },
-        h("div", { class: "row" },
-          r ? h("button", { class: "btn danger", onclick: async () => {
-            if (!confirm(`Delete “${r.name}”?`)) return;
-            await api("DELETE", `/api/recipes/${r.id}`); await reload(); close(); toast("Recipe deleted"); render();
-          } }, "Delete") : null,
-          r && r.ingredients.length ? h("button", { class: "btn", title: "Find days and weeks built around this dish", onclick: () => {
-            close(); S.anchors = [r.id]; S.planTab = "ideas"; S.combos = null;
-            if (location.hash === "#plan") render(); else location.hash = "#plan";
-            runIdeas();
-          } }, svg("sparkle"), "Plan around this") : null,
-          r ? h("button", { class: "btn", onclick: () => { close(); const c = JSON.parse(JSON.stringify(r)); delete c.id; delete c.seed_key; c.name += " (copy)"; openRecipe({ ...c, nutrition: r.nutrition }); } }, svg("copy"), "Duplicate") : null),
-        h("div", { class: "row" }, h("button", { class: "btn", onclick: close }, "Cancel"),
-          h("button", { class: "btn primary", onclick: save }, r ? "Save recipe" : "Add recipe")))));
-  document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); } });
-  document.body.append(scrim);
-  refresh();
-}
-
-/* ================================================================
    PANTRY
    ================================================================ */
 function viewPantry() {
@@ -827,7 +670,11 @@ function openAddIngredient(query, onDone) {
     tabs.replaceChildren(
       h("button", { class: tab === "usda" ? "on" : "", onclick: () => { tab = "usda"; draw(); } }, "Search USDA"),
       h("button", { class: tab === "label" ? "on" : "", onclick: () => { tab = "label"; draw(); } }, "From a nutrition label"));
-    body.replaceChildren(tab === "usda" ? usdaSearchPane(query, done) : ingredientForm({ name: query, source: "manual", nutrients: {}, portions: [], aisle: "Other" }, done, { labelMode: true }));
+    body.replaceChildren(tab === "usda" ? usdaSearchPane(query, done) : h("div", null,
+      h("div", { class: "banner scan-banner" }, svg("camera"), h("div", { style: { flex: 1 } },
+        h("b", null, "Have the package handy?"), h("p", { class: "small", style: { margin: "2px 0 8px" } }, "Take a photo of the Nutrition Facts panel and the values are filled in for you."),
+        h("button", { class: "btn sm primary", onclick: () => { close(); openScanLabel(ing => { if (onDone) onDone(ing); }); } }, svg("scan"), "Scan the label"))),
+      ingredientForm({ name: query, source: "manual", nutrients: {}, portions: [], aisle: "Other" }, done, { labelMode: true })));
   };
   const close = () => scrim.remove();
   const done = ing => { close(); if (onDone) onDone(ing); };
@@ -884,9 +731,9 @@ function openIngredient(i) {
       h("div", { class: "drawer-body" }, ingredientForm(JSON.parse(JSON.stringify(i)), () => close()))));
   document.body.append(scrim);
 }
-function ingredientForm(I, done, { labelMode } = {}) {
+function ingredientForm(I, done, { labelMode, basis: basis0 } = {}) {
   // nutrient values are edited per `basis` grams, stored per 100 g
-  let basis = labelMode ? 30 : 100;
+  let basis = basis0 || (labelMode ? 30 : 100);
   const vals = {};
   for (const n of S.data.nutrients) if (I.nutrients[n.key] != null) vals[n.key] = I.nutrients[n.key] * basis / 100;
   const form = h("div");
@@ -935,7 +782,9 @@ function ingredientForm(I, done, { labelMode } = {}) {
     nutInputs);
   const save = async () => {
     if (!(I.name || "").trim()) { toast("Name is required", true); return; }
-    I.nutrients = {};
+    const shown = new Set(S.data.nutrients.map(n => n.key));
+    const kept = Object.fromEntries(Object.entries(I.nutrients || {}).filter(([k]) => !shown.has(k)));   // e.g. amino acids from USDA
+    I.nutrients = kept;
     for (const k in vals) I.nutrients[k] = vals[k] * 100 / basis;
     I.portions = I.portions.filter(p => p.label && +p.grams > 0).map(p => ({ label: p.label.trim(), grams: +p.grams }));
     try {
@@ -1032,7 +881,6 @@ function viewPrep() {
     return root;
   }
   const P = W.prep;
-  const hrs = P.total_minutes >= 60 ? `${Math.floor(P.total_minutes / 60)} h ${P.total_minutes % 60} min` : `${P.total_minutes} min`;
   root.append(pageHead(`Prep day${S.weekName ? ": " + S.weekName : ""}`,
     "Approximate prep and cook time with instructions. Shopping list included!",
     h("button", { class: "btn no-print", onclick: () => print() }, svg("print"), "Print")));
@@ -1052,20 +900,40 @@ function viewPrep() {
     }
     shop.append(box);
   }
-  const cook = h("div", { class: "panel" }, h("h2", { style: { marginBottom: "12px" } }, "Cook"));
+  root.append(prepTimeline(P));
+  const cook = h("div", { class: "panel" }, h("h2", { style: { marginBottom: "12px" } }, "Step by step"));
+  const SC = P.schedule || { steps: [], lanes: [] };
+  const startAt = store.get("prepStart", "10:00");
+  const clock = m => {
+    const [hh, mm] = startAt.split(":").map(Number);
+    const t = new Date(2000, 0, 1, hh || 0, (mm || 0) + m);
+    return t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  };
+  const byId = Object.fromEntries(P.batches.map(b => [b.recipe_id, b]));
   const staples = P.batches.filter(b => b.minutes <= 5);
-  for (const b of P.batches.filter(b => b.minutes > 5)) {
+  const ol = h("ol", { class: "prep-steps" });
+  for (const st of SC.steps) {
+    const b = byId[st.recipe_id];
     const mult = b.multiplier === 1 ? "1 batch" : `${b.multiplier}× batch`;
-    cook.append(h("div", { class: "batch" },
-      h("div", { class: "batch-h" }, h("b", null, b.name), h("span", { class: "muted small" }, `${mult} → ${fmtServ(b.multiplier * b.yield)} servings · ${b.minutes} min`)),
-      h("div", { class: "split" },
-        b.fridge_servings ? h("span", null, svg("fridge"), `${fmtServ(b.fridge_servings)} to the fridge`) : null,
-        b.freezer_servings ? h("span", null, svg("freezer"), `${fmtServ(b.freezer_servings)} to the freezer`) : null,
-        b.extra_servings > 0.01 ? h("span", { class: "muted" }, `${fmtServ(b.extra_servings)} extra`) : null),
-      h("details", null, h("summary", null, "Scaled ingredients & steps"),
-        h("ul", null, b.lines.map(l => h("li", null, `${l.amount} ${l.name}`, l.note ? h("span", { class: "muted" }, ` (${l.note})`) : null, h("span", { class: "muted" }, ` · ${fmt(l.grams)} g`)))),
-        h("pre", null, b.steps))));
+    ol.append(h("li", null,
+      h("div", { class: "when" }, h("b", null, clock(st.at))),
+      h("div", { class: "batch" },
+        h("div", { class: "batch-h" }, h("b", null, `Start ${b.name}`), h("span", { class: "muted small" }, `${mult} → ${fmtServ(b.multiplier * b.yield)} servings`)),
+        h("p", { class: "small", style: { margin: "4px 0 0" } }, `About ${st.hands} min hands-on`, st.cook ? `, then it cooks on its own for ${st.cook} min (ready around ${clock(st.done)}).` : "."),
+        h("div", { class: "split" },
+          b.fridge_servings ? h("span", null, svg("fridge"), `${fmtServ(b.fridge_servings)} to the fridge`) : null,
+          b.freezer_servings ? h("span", null, svg("freezer"), `${fmtServ(b.freezer_servings)} to the freezer`) : null,
+          b.extra_servings > 0.01 ? h("span", { class: "muted" }, `${fmtServ(b.extra_servings)} extra`) : null),
+        h("details", null, h("summary", null, "Scaled ingredients & steps"),
+          h("ul", null, b.lines.map(l => h("li", null, `${l.amount} ${l.name}`, l.note ? h("span", { class: "muted" }, ` (${l.note})`) : null, h("span", { class: "muted" }, ` · ${fmt(l.grams)} g`)))),
+          h("pre", null, b.steps)))));
   }
+  if (SC.pack) ol.append(h("li", null, h("div", { class: "when" }, h("b", null, clock(SC.pack.at))),
+    h("div", { class: "batch" }, h("div", { class: "batch-h" }, h("b", null, "Portion & pack")),
+      h("p", { class: "small", style: { margin: "4px 0 0" } }, `Let hot food cool a little, then portion it: ${fmtServ(SC.pack.fridge)} serving${SC.pack.fridge === 1 ? "" : "s"} to the fridge` +
+        (SC.pack.freezer ? `, ${fmtServ(SC.pack.freezer)} to the freezer (label them with the date)` : "") + `. Done around ${clock(SC.total)}.`))));
+  cook.append(h("label", { class: "row small no-print start-at" }, svg("clock"), "Starting at",
+    h("input", { type: "time", value: startAt, onchange: e => { store.set("prepStart", e.target.value || "10:00"); render(); } })), ol);
   if (staples.length) cook.append(h("div", { class: "batch" }, h("b", null, "No-cook staples to have on hand"),
     h("ul", null, staples.map(b => h("li", null, `${b.name}: ${fmtServ(b.servings_needed)} serving${b.servings_needed === 1 ? "" : "s"}`)))));
   const thaw = h("div", { class: "panel" }, h("h2", { style: { marginBottom: "8px" } }, "Thaw schedule"),
@@ -1074,8 +942,30 @@ function viewPrep() {
       const idx = DAYS.indexOf(t.eat_day);
       return h("li", null, h("b", null, `${DAYS[(idx + 6) % 7]} night`), h("span", null, `${fmtServ(t.servings)} × ${t.recipe}`, h("span", { class: "muted" }, ` for ${t.eat_day}`)));
     })));
-  root.append(h("div", { class: "prep-grid" }, shop, h("div", null, cook, thaw)));
+  root.append(h("div", { class: "prep-grid" }, h("div", null, cook, thaw), shop));
   return root;
+}
+const hm = m => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}` : `${m} min`);
+function prepTimeline(P) {
+  const SC = P.schedule;
+  if (!SC || !SC.lanes.length) return null;
+  const total = Math.max(SC.total, 1);
+  const step = total > 240 ? 60 : total > 120 ? 30 : 15;
+  const ticks = h("div", { class: "ticks" });
+  for (let m = 0; m <= total; m += step) ticks.append(h("span", { style: { left: m / total * 100 + "%" } }, `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`));
+  const lanes = SC.lanes.map(l => h("div", { class: "lane" }, h("div", { class: "lb", title: l.name }, l.name),
+    h("div", { class: "tr" }, l.blocks.map(b => h("div", { class: "blk " + b.kind, style: { left: b.start / total * 100 + "%", width: Math.max(0.8, (b.end - b.start) / total * 100) + "%" },
+      title: `${b.label}: ${b.end - b.start} min` }, h("span", null, b.label))))));
+  const dishes = SC.steps.length, staples = P.batches.filter(b => b.minutes <= 5).length;
+  return h("div", { class: "panel prep-tl" },
+    h("div", { class: "tstat" },
+      h("div", null, h("b", null, "~" + hm(SC.total)), h("span", { class: "ann" }, "start to finish")),
+      h("div", null, h("b", null, "~" + hm(SC.hands_on)), h("span", { class: "ann" }, "hands-on")),
+      h("div", null, h("b", null, `${dishes} dish${dishes === 1 ? "" : "es"}`), h("span", { class: "ann" }, staples ? `+ ${staples} no-cook staple${staples === 1 ? "" : "s"}` : "to cook"))),
+    h("p", { class: "muted small", style: { margin: "8px 0 4px" } }, "Start the longest-cooking dish first and prep the next one while it simmers or bakes. Times come from each recipe's prep and cook minutes, so treat them as a guide."),
+    h("div", { class: "tl" }, h("div", { class: "axis" }, h("span"), ticks), lanes),
+    h("div", { class: "legend" }, h("span", null, h("i", { style: { background: "var(--acorn)" } }), "Hands-on"),
+      h("span", null, h("i", { class: "wait-sw" }), "Hands-off (simmer, bake, chill)")));
 }
 
 /* ================================================================
@@ -1172,7 +1062,31 @@ function viewSettings() {
         try { const res = await api("POST", "/api/import", JSON.parse(await f.text())); await reload(); render(); toast(`Imported ${res.recipes} recipes and ${res.ingredients} ingredients`); }
         catch (err) { toast("That file isn't a valid backup: " + err.message, true); }
       } }))));
-  root.append(h("div", { class: "settings-grid" }, targetsPanel, h("div", null, syncPanel(), suppPanel, structPanel, dataPanel)));
+  // tracker
+  const tr = { ...S.data.settings.tracker }, prof = { ...S.data.settings.profile };
+  const saveTr = debounce(async () => { await saveSetting("tracker", tr); toast("Tracker saved"); }, 500);
+  const num = (label, obj, key, save, extra) => h("label", { class: "field" }, h("span", null, label),
+    h("input", { type: "number", value: obj[key], ...extra, onchange: e => { obj[key] = +e.target.value; save(); } }));
+  const trackerPanel = h("div", { class: "panel" }, h("h2", { style: { marginBottom: "6px" } }, "Tracker"),
+    h("p", { class: "muted small" }, "What counts as a good day, a good week and a sticker month."),
+    h("div", { class: "grid2" },
+      num("A good day scores at least", tr, "good_day", saveTr, { min: 50, max: 100 }),
+      num("Good days for a good week", tr, "good_days_per_week", saveTr, { min: 1, max: 7 }),
+      num("Good weeks for a month sticker", tr, "weeks_per_sticker", saveTr, { min: 1, max: 5 }),
+      num("Her weight (lb), for amino acid needs", prof, "weight_lb", debounce(async () => { await saveSetting("profile", prof); toast("Saved"); }, 500), { min: 60, max: 400 })));
+  // scanning
+  const scanStatus = h("p", { class: "small" }, Z.store.S.github ? "Uses the website's scanner. Tap Check to test it." : "Scanning needs this device connected to GitHub (above).");
+  const scanPanel = h("div", { class: "panel" }, h("h2", { style: { marginBottom: "6px" } }, "Scanning"),
+    h("p", { class: "muted small" }, "Recipes and nutrition labels are read by AI on your website (Cloudflare), using its free daily allowance. Photos are only used to read them and aren't kept there."),
+    scanStatus,
+    h("button", { class: "btn", disabled: !Z.store.S.github, onclick: async () => {
+      scanStatus.textContent = "Checking…";
+      try {
+        const r = await api("POST", "/api/scan", { kind: "ping" });
+        scanStatus.textContent = r.ok ? `Scanning works (${r.engine === "claude" ? "Claude" : "Cloudflare Workers AI, free"}).` : "The scanner is reachable but no AI is switched on yet. See the README's Scanning section.";
+      } catch (e) { scanStatus.textContent = e.message; }
+    } }, "Check scanning"));
+  root.append(h("div", { class: "settings-grid" }, targetsPanel, h("div", null, syncPanel(), suppPanel, structPanel, trackerPanel, scanPanel, dataPanel)));
   return root;
 }
 
@@ -1275,7 +1189,7 @@ function showConnect(fromSettings) {
 }
 
 /* ---------------- boot ---------------- */
-(async function boot() {
+async function boot() {
   const theme = store.get("theme", null);
   if (theme) document.documentElement.dataset.theme = theme;
   const app = document.getElementById("app");
@@ -1316,4 +1230,18 @@ function showConnect(fromSettings) {
     }
   });
   route();
-})();
+  // upload photos saved while offline; fill in amino acids for ingredients added before they were tracked
+  setTimeout(() => { Z.media.flush(); backfillAmino(); }, 1500);
+}
+async function backfillAmino() {
+  if (!S.data.settings.usda_api_key) return;
+  let changed = false;
+  for (let i = 0; i < 10; i++) {
+    let res;
+    try { res = await api("POST", "/api/usda/amino-backfill"); } catch { break; }
+    if (res.updated) changed = true;
+    if (!res.left) break;
+  }
+  if (changed) { await reload(); if (!document.querySelector(".scrim") && ["recipes", "recipe", "tracker"].includes(S.view)) render(); }
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else setTimeout(boot, 0);

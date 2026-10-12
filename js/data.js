@@ -728,6 +728,11 @@ Z.DEFAULT_SETTINGS = {
  "profile": {
   "name": "",
   "weight_lb": 140
+ },
+ "tracker": {
+  "good_day": 85,
+  "good_days_per_week": 5,
+  "weeks_per_sticker": 4
  }
 };
 Z.STARTER_PANTRY = [

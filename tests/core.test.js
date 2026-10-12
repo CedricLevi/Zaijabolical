@@ -21,3 +21,42 @@ const out = Z.parseUsdaNutrients([{ nutrientId: 1003, value: 10 }, { nutrientId:
   { nutrientId: 1110, value: 400 }, { nutrientId: 1278, value: 0.1 }, { nutrientId: 1272, value: 0.2 }]);
 assert(out.protein === 10 && !("kcal" in out) && Math.abs(out.vit_d - 10) < 1e-9 && Math.abs(out.epa_dha - 300) < 1e-6);
 console.log(`core ok (${n} nutrient values match Python)`);
+
+// amino acids: parsed by number or name, protein quality vs. the WHO pattern
+const aa = Z.parseUsdaNutrients([{ nutrient: { number: "505", name: "Lysine" }, amount: 0.6 }, { nutrientName: "Methionine", value: 0.1 },
+  { number: "203", name: "Protein", amount: 10 }]);
+assert(aa.aa_lys === 0.6 && aa.aa_met === 0.1 && aa.protein === 10, JSON.stringify(aa));
+const pattern = { aa_his: .15, aa_ile: .30, aa_leu: .59, aa_lys: .45, aa_met: .11, aa_cys: .11, aa_phe: .19, aa_tyr: .19, aa_thr: .23, aa_trp: .06, aa_val: .39 };
+const perfect = Z.aminoFromGrams([[{ nutrients: { protein: 10, ...pattern } }, 100]]);
+assert(perfect.acids.every(a => Math.abs(a.quality - 100) < 1e-6) && perfect.score === 100 && perfect.coverage === 1);
+const grain = Z.aminoFromGrams([[{ nutrients: { protein: 10, ...pattern, aa_lys: .30 } }, 100], [{ nutrients: { protein: 5 } }, 100]]);
+assert(grain.limiting === "lys" && Math.abs(grain.score - 30 / 45 * 100) < 1e-6 && Math.abs(grain.coverage - 2 / 3) < 1e-9);
+
+// prep-day schedule: long cooks start first and overlap with the next dish's prep
+const sch = Z.buildSchedule([
+  { recipe_id: "a", name: "Rice", prep_min: 5, cook_min: 45, minutes: 50, multiplier: 1, fridge_servings: 4, freezer_servings: 0 },
+  { recipe_id: "b", name: "Stew", prep_min: 20, cook_min: 30, minutes: 50, multiplier: 1, fridge_servings: 3, freezer_servings: 3 },
+  { recipe_id: "c", name: "Milk", prep_min: 0, cook_min: 0, minutes: 0, multiplier: 1, fridge_servings: 7, freezer_servings: 0 }]);
+assert.deepStrictEqual(sch.steps.map(s => [s.name, s.at]), [["Rice", 0], ["Stew", 5]]);
+assert.strictEqual(sch.total, 55 + 11);          // stew done at 55, then 5 + 3×2 min to pack
+assert.strictEqual(sch.hands_on, 5 + 20 + 11);
+assert.strictEqual(sch.pack.fridge, 7);          // no-cook staples aren't packed
+
+// tracker: 5 good days make a good week; 4 good weeks in a month make a sticker
+const T = Z.tracker, logs = [];
+const start = T.weekStart("2026-10-12", "Monday");
+assert.strictEqual(start, "2026-10-12");
+assert.strictEqual(T.weekStart("2026-10-18", "Monday"), "2026-10-12");
+assert.strictEqual(T.weekMonth("2026-09-28"), "2026-10");   // most of that week is in October
+for (const ws of ["2026-08-31", "2026-09-07", "2026-09-14", "2026-09-21"])
+  for (let d = 0; d < 7; d++) logs.push({ date: T.addDays(ws, d), score: d < 5 ? 90 : 50, eaten: 2 });
+for (let d = 0; d < 4; d++) logs.push({ date: T.addDays("2026-09-28", d), score: d < 4 ? 86 : 0, eaten: 2 });
+logs.push({ date: "2026-10-01", score: 99, eaten: 0 });       // nothing eaten: ignored
+const sm = T.summarize(logs, { today: "2026-10-01", startDay: "Monday" });
+assert.deepStrictEqual(sm.stickers, ["2026-09"]);
+assert.strictEqual(sm.months["2026-09"], 4);
+assert.strictEqual(sm.current.goodWeeks, 0);
+assert.strictEqual(sm.current.needDays, 1);
+assert.strictEqual(sm.current.daysLeft, 4);   // Thu–Sun
+assert.strictEqual(sm.current.stillPossible, true);
+console.log("amino, schedule & tracker ok");

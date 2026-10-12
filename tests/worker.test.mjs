@@ -6,7 +6,7 @@ writeFileSync("/tmp/cfw.mjs", src);
 const calls = [];
 globalThis.fetch = async (input, init = {}) => {
   const u = typeof input === "string" ? input : input.url;
-  calls.push([u, init.method || (input.method) || "GET"]);
+  calls.push([u, init.method || (input.method) || "GET", init.body ? await new Response(init.body).text() : null]);
   if (u === "https://zaijabolical.pages.dev/old") return new Response(null, { status: 308, headers: { location: "/new" } });
   return new Response("ok:" + u, { status: 200 });
 };
@@ -23,6 +23,9 @@ r = await w.fetch(new Request("https://cedriclevi.com/zaijabolical/usda/foods/se
 assert.equal(await r.text(), "ok:https://api.nal.usda.gov/fdc/v1/foods/search?api_key=K");
 r = await w.fetch(new Request("https://cedriclevi.com/zaijabolical/usda/foods/x", { method: "DELETE" }));
 assert.equal(r.status, 405);
+r = await w.fetch(new Request("https://cedriclevi.com/zaijabolical/api/scan", { method: "POST", body: '{"kind":"ping"}', headers: { "Content-Type": "application/json" } }));
+assert.equal(await r.text(), "ok:https://zaijabolical.pages.dev/api/scan");
+assert.deepEqual(calls.at(-1), ["https://zaijabolical.pages.dev/api/scan", "POST", '{"kind":"ping"}'], "scan photos are forwarded to the site");
 r = await w.fetch(new Request("https://cedriclevi.com/about"));
 assert.equal(await r.text(), "ok:https://cedriclevi.com/about");
 console.log("worker ok");
