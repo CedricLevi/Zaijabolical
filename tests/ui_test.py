@@ -125,6 +125,11 @@ with sync_playwright() as p:
     # recipes + editor + new recipe
     pg.goto(BASE + "#recipes"); pg.wait_for_timeout(400); pg.screenshot(path=f"{OUT}/08-recipes.png")
     pg.click(".rcard >> nth=2"); pg.wait_for_timeout(800); pg.screenshot(path=f"{OUT}/09-editor.png")
+    # every ingredient line shows its name and its household unit (regression: blank names / "g")
+    names = pg.eval_on_selector_all(".ing-pick input", "els => els.map(e => e.value)")
+    units = pg.eval_on_selector_all(".ing-line select", "els => els.map(e => e.value)")
+    assert names and all(names), names
+    assert any(u not in ("g", "oz", "lb") for u in units), units
     pg.keyboard.press("Escape")
     pg.click("text=New recipe"); pg.fill(".drawer input >> nth=0", "Test lentil bowl")
     pg.click("text=Add ingredient >> nth=0"); pg.click(".ing-pick input"); pg.fill(".ing-pick input", "lent")

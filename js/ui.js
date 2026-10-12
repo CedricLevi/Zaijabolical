@@ -310,7 +310,7 @@ function loading(msg) {
 function viewPlan() {
   const root = h("div");
   const usable = S.data.recipes.filter(r => r.active && r.ingredients.length);
-  root.append(pageHead("Plan", "Combinations of your recipes that best cover her daily targets, plus what to supplement for anything food can't reach."));
+  root.append(pageHead("Plan", "Make combinations of our recipes that best cover your daily nutritional targets."));
   if (!usable.length) {
     root.append(h("div", { class: "empty" },
       h("h2", null, "Add a few recipes to start planning"),
@@ -669,7 +669,7 @@ function openRecipe(r) {
     R.ingredients.forEach((line, idx) => lines.append(ingLine(line, idx)));
   };
   const ingLine = (line, idx) => {
-    const ing = ingById(+line.ingredient_id);
+    const ing = ingById(line.ingredient_id);
     const units = ["g", "oz", "lb", ...(ing ? ing.portions.map(p => p.label) : [])];
     const unitSel = h("select", { onchange: e => { line.unit = e.target.value; refresh(); } },
       units.map(u => h("option", { value: u, selected: (line.unit || "g") === u }, u)));
@@ -1025,7 +1025,7 @@ function viewPrep() {
   const root = h("div");
   const W = S.week;
   if (!W || !W.prep) {
-    root.append(pageHead("Prep day", "Your shopping list, cooking order and freezer schedule for the week."));
+    root.append(pageHead("Prep day", "Approximate prep and cook time with instructions. Shopping list included!"));
     root.append(h("div", { class: "empty" }, h("h2", null, "Plan a week first"),
       h("p", null, "The prep sheet is built from the current week plan."),
       h("a", { class: "btn primary", href: "#plan" }, "Go to Plan")));
@@ -1034,7 +1034,7 @@ function viewPrep() {
   const P = W.prep;
   const hrs = P.total_minutes >= 60 ? `${Math.floor(P.total_minutes / 60)} h ${P.total_minutes % 60} min` : `${P.total_minutes} min`;
   root.append(pageHead(`Prep day${S.weekName ? ": " + S.weekName : ""}`,
-    `About ${hrs} of recipe time in total (overlapping it with the oven running makes it shorter). Longest-cooking dishes are listed first so you can start them early.`,
+    "Approximate prep and cook time with instructions. Shopping list included!",
     h("button", { class: "btn no-print", onclick: () => print() }, svg("print"), "Print")));
   const key = "shop-" + (S.weekName || "current");
   S.shopDone = store.get(key, {});
@@ -1084,7 +1084,7 @@ function viewPrep() {
 function viewSettings() {
   const root = h("div");
   const s = S.data.settings;
-  root.append(pageHead("Settings", "Her daily targets, the supplements she takes, and how the planner builds a day."));
+  root.append(pageHead("Settings", "Change your goals and app preferences here."));
   const targets = JSON.parse(JSON.stringify(s.targets));
   const saveTargets = debounce(async () => { await saveSetting("targets", targets); toast("Targets saved"); S.combos = null; }, 600);
   const tbl = h("table", { class: "table" }, h("thead", null, h("tr", null, h("th", null, "Track"), h("th", null, "Nutrient"), h("th", null, "Daily target"), h("th", null, "Upper limit"))));
