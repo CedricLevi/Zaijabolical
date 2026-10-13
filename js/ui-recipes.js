@@ -190,16 +190,16 @@ function viewRecipes() {
   } else if (S.recipeView === "list") {
     root.append(listTable(list));
   } else {
-    root.append(h("div", { class: "cards" }, list.map(simpleCard)));
+    root.append(h("div", { class: "cards" }, list.map(r => simpleCard(r))));
   }
   return root;
 }
 const goRecipe = r => { location.hash = "#recipe/" + encodeURIComponent(r.id); };
 
-function simpleCard(r) {
+function simpleCard(r, onClick) {
   const per = r.nutrition.per_serving;
   const rows = rowsFor(per).map(x => ({ ...x, status: x.kind === "limit" ? (x.pct > 50 ? "ok" : "good") : (x.pct >= 33 ? "good" : x.pct >= 15 ? "ok" : "low") }));
-  return h("button", { class: "pcard" + (r.active ? "" : " inactive"), onclick: () => goRecipe(r) },
+  return h("button", { class: "pcard" + (r.active ? "" : " inactive"), onclick: () => (onClick || goRecipe)(r) },
     h("div", { class: "ph" }, coverEl(r), h("div", { class: "over" }, h("h3", null, r.name))),
     h("div", { class: "bd" },
       h("div", { class: "row between" }, stars(r.rating),
@@ -837,4 +837,33 @@ function openLabelReview(result, onDone) {
       h("div", { class: "drawer-head" }, h("h2", null, "Check the label"), h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, svg("x"))),
       h("div", { class: "drawer-body" }, notes, ingredientForm(L.I, ing => { close(); if (onDone) onDone(ing); }, { labelMode: true, basis: L.basis }))));
   document.body.append(scrim);
+}
+
+/* ---------------- recipe picker: the cookbook in a pop-up, for adding a dish somewhere ---------------- */
+function pickRecipe({ title, onPick, exclude = [], onlyActive = false }) {
+  const st = { q: "", cat: "All" };
+  const close = () => { scrim.remove(); document.removeEventListener("keydown", esc); };
+  const grid = h("div", { class: "cards picker-cards" });
+  const seg = h("div", { class: "seg cats" });
+  const draw = () => {
+    seg.replaceChildren(...["All", ...CATS].map(c => h("button", { class: st.cat === c ? "on" : "", onclick: () => { st.cat = c; draw(); } }, c)));
+    const q = st.q.toLowerCase().trim();
+    const list = S.data.recipes.filter(r => r.ingredients.length && (!onlyActive || r.active) && !exclude.includes(r.id) &&
+      (st.cat === "All" || r.category === st.cat) && (!q || r.name.toLowerCase().includes(q) || (r.tags || []).join(" ").toLowerCase().includes(q)))
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    grid.replaceChildren(...(list.length ? list.map(r => simpleCard(r, () => { close(); onPick(r); }))
+      : [h("p", { class: "muted" }, "No recipes match.")]));
+  };
+  const search = h("input", { type: "search", placeholder: "Search recipes", "aria-label": "Search recipes", class: "rsearch",
+    oninput: debounce(e => { st.q = e.target.value; draw(); }, 150) });
+  const scrim = h("div", { class: "scrim center", onclick: e => { if (e.target === scrim) close(); } },
+    h("div", { class: "modal wide", role: "dialog", "aria-modal": "true", "aria-label": title },
+      h("div", { class: "drawer-head" }, h("h2", null, title), h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, svg("x"))),
+      h("div", { class: "picker-tools" }, search, seg),
+      h("div", { class: "drawer-body" }, grid)));
+  function esc(e) { if (e.key === "Escape") close(); }
+  document.addEventListener("keydown", esc);
+  document.body.append(scrim);
+  draw();
+  if (matchMedia("(hover: hover)").matches) search.focus();
 }

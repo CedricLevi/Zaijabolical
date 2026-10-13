@@ -21,7 +21,7 @@ It runs entirely in the browser at **cedriclevi.com/zaijabolical**. Nothing is i
   - *List*: a sortable table.
   - Search, filter by rating and sort in every view. Tapping a recipe opens its page (photos, rating, about, ingredients, steps, nutrition, notes, links, attachments); **Edit** unlocks it, and **Print** gives a clean one-page version.
   - **Scan a recipe** turns a photo of a cookbook page or card into a draft recipe for you to check.
-- **Tracker:** check off what she actually ate (the day's planned meals are filled in). Each day gets a coverage score. A good day scores 85+, 5 good days make a good week (the squirrel's cheeks fill), and 4 good weeks in a month earn a heart-eyed acorn sticker. All three numbers are in Settings.
+- **Tracker:** check off what she actually ate (the day's planned meals are filled in). Each day gets a coverage score. A good day scores 85+, 5 good days make a good week (the squirrel's cheeks fill), and 4 good weeks in a month earn a seasonal acorn sticker for that month. All three numbers are in Settings.
 - **Pantry:** ingredients with nutrients from USDA FoodData Central, typed in from a package label, or read from a photo of the label (*Scan the label*). *Import starters* adds 55 staples and 16 high-protein prep recipes.
 - **Prep day:** a timeline (longest-cooking dish first, prep the next while it simmers), step-by-step clock times, shopping list by aisle, fridge/freezer split and thaw reminders.
 - **Settings:**
@@ -83,7 +83,7 @@ app.css               styles
 js/data.js            nutrient catalogue, default targets, starter pantry & recipes
 js/core.js            nutrient math, amino acids, scoring, supplement advice, prep sheet & timeline
 js/tracker.js         tracker weeks, months and stickers
-js/art.js             squirrel and acorn-sticker drawings
+js/art.js             squirrel drawings (monthly acorn stickers: assets/stickers/)
 js/planner.js         day/week planner
 js/store.js           storage + GitHub sync (merge by record, newest edit wins)
 js/media.js           photos & attachments (this browser + media/ in the data repo)

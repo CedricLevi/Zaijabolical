@@ -280,14 +280,14 @@
   // week state shared between devices (stored compactly, expanded on read)
   route("PUT", "/api/week/current", (p, body) => {
     const v = body.value;
-    store().setDocField("current_week", v && v.data ? { name: v.name || null, choice: v.choice ?? null, week: compactWeek(v.data) } : null);
+    store().setDocField("current_week", v && v.data ? { name: v.name || null, choice: v.choice ?? null, week_of: v.week_of || null, week: compactWeek(v.data) } : null);
     return { ok: true };
   });
   route("GET", "/api/week/current", () => {
     const cw = doc().current_week;
     if (!cw || !cw.week) return null;
     const data = expandWeek(cw.week);
-    return data ? { name: cw.name, choice: cw.choice, data } : null;
+    return data ? { name: cw.name, choice: cw.choice, week_of: cw.week_of || null, data } : null;
   });
   route("PUT", "/api/week/options", (p, body) => {
     const v = body.value;
@@ -347,7 +347,8 @@
   const logId = date => "log-" + date;
   function plannedFor(date) {
     const cw = doc().current_week;
-    if (!cw || !cw.week) return [];
+    if (!cw || !cw.week || !cw.week_of) return [];
+    if (date < cw.week_of || date > Z.tracker.addDays(cw.week_of, 6)) return [];   // only the week the plan is for
     const name = Z.tracker.weekdayName(date);
     const d = cw.week.days.find(x => x.day === name);
     return d ? d.items.filter(i => recipeMap()[i.recipe_id]).map(i => ({ recipe_id: i.recipe_id, servings: i.servings, eaten: false, planned: true })) : [];

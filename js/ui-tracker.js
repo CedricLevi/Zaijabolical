@@ -107,15 +107,17 @@ function dayPanel(st, o) {
     S.week ? "Nothing planned for this day. Add what she ate below." : "No week plan yet, so nothing is pre-filled. Add what she ate below."));
   const anyPlannedOpen = d.items.some(i => !i.eaten);
   const actions = h("div", { class: "row trk-add" },
-    h("select", { class: "pill", "aria-label": "Add a dish", disabled: isFuture, onchange: e => {
-      const id = e.target.value; if (!id) return;
-      const ex = d.items.find(x => x.recipe_id === id);
-      if (ex) { ex.servings += ex.eaten ? 1 : 0; ex.eaten = true; } else d.items.push({ recipe_id: id, servings: 1, eaten: true });
+    h("button", { class: "btn sm", disabled: isFuture, onclick: () => pickRecipe({ title: "What did she eat?", onPick: r => {
+      const ex = d.items.find(x => x.recipe_id === r.id);
+      if (ex) { ex.servings += ex.eaten ? 1 : 0; ex.eaten = true; } else d.items.push({ recipe_id: r.id, servings: 1, eaten: true });
       saveTrackerDay();
-    } }, h("option", { value: "" }, "+ Add a dish"),
-      CATS.map(c => h("optgroup", { label: c }, S.data.recipes.filter(r => r.category === c && r.ingredients.length).map(r => h("option", { value: r.id }, r.name))))),
+    } }) }, svg("plus"), "Add a dish"),
     h("button", { class: "btn sm", disabled: isFuture, onclick: () => { st.adding = st.adding ? null : { ingredient_id: "", amount: 1, unit: "" }; render(); } }, svg("plus"), "Pantry item"),
-    anyPlannedOpen && !isFuture ? h("button", { class: "btn sm", onclick: () => { d.items.forEach(i => { i.eaten = true; }); saveTrackerDay(); } }, svg("check"), "Ate everything") : null);
+    anyPlannedOpen && !isFuture ? h("button", { class: "btn sm", onclick: () => { d.items.forEach(i => { i.eaten = true; }); saveTrackerDay(); } }, svg("check"), "Ate everything") : null,
+    d.items.length && !isFuture ? h("button", { class: "btn sm ghost", onclick: () => {
+      if (d.items.some(i => i.eaten) && !confirm("Clear everything on this day's list?")) return;
+      d.items = []; saveTrackerDay();
+    } }, svg("x"), "Clear") : null);
   return h("div", { class: "panel p-day" }, head, list, st.adding ? addIngredientRow(st) : null, actions,
     isFuture ? h("p", { class: "muted small" }, "This day hasn't happened yet.") : null);
 }
@@ -203,17 +205,27 @@ function cheeksPanel(sum, o) {
     slots,
     h("div", { class: "banner cheer" }, svg("star"), h("div", { class: "small" }, msg)));
 }
+const stickerSrc = ym => `assets/stickers/${ym.slice(5, 7)}.webp`;
+function stickerEl(ym, label, cls) {
+  return h("div", { class: "sticker" + (cls ? " " + cls : "") },
+    h("img", { src: stickerSrc(ym), alt: `${Z.tracker.monthLabel(ym, true)} acorn sticker`, width: 104, height: 104, loading: "lazy" }),
+    h("span", { class: "pill-label" }, label));
+}
 function shelfPanel(sum, o) {
   const shelf = h("div", { class: "shelf" });
   const earned = [...sum.stickers].reverse();
   if (!sum.stickers.includes(sum.current.month)) {
-    shelf.append(h("div", { class: "sticker empty" }, h("b", null, Z.tracker.monthLabel(sum.current.month).split(" ")[0]),
-      h("span", null, `${Math.min(sum.current.goodWeeks, o.weeks_per_sticker)} of ${o.weeks_per_sticker} weeks`)));
+    shelf.append(stickerEl(sum.current.month, `${Math.min(sum.current.goodWeeks, o.weeks_per_sticker)} of ${o.weeks_per_sticker} weeks`, "locked"));
   }
-  for (const m of earned) shelf.append(h("div", { class: "sticker", title: `${Z.tracker.monthLabel(m, true)}: ${sum.months[m]} good weeks` },
-    artEl(Z.art.acorn(Z.tracker.monthLabel(m), 104))));
+  for (const m of earned) {
+    const el = stickerEl(m, Z.tracker.monthLabel(m));
+    el.title = `${Z.tracker.monthLabel(m, true)}: ${sum.months[m]} good weeks`;
+    shelf.append(el);
+  }
   return h("div", { class: "panel p-shelf" }, h("h2", { style: { marginBottom: "10px" } }, "Sticker shelf"), shelf,
-    earned.length ? null : h("p", { class: "muted small", style: { margin: "10px 0 0" } }, "Her first heart-eyed acorn shows up here."));
+    h("p", { class: "muted small", style: { margin: "10px 0 0" } }, earned.length
+      ? "Every month has its own acorn."
+      : `Fill four weeks of cheeks to earn ${Z.tracker.monthLabel(sum.current.month, true).split(" ")[0]}'s acorn.`));
 }
 function trendPanel(sum, o) {
   const weeks = sum.weeks.filter(w => w.average != null).slice(-8);

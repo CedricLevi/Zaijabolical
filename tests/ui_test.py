@@ -155,18 +155,31 @@ with sync_playwright() as p:
     d = remote_doc(); assert len(d["recipes"]) == 16 and len(d["ingredients"]) == 55, (len(d["recipes"]), len(d["ingredients"]))
     assert d["settings"]["usda_api_key"] == "TESTKEY"
 
-    # week plan
+    # week plan: nothing shows until a week is planned
+    pg.goto(BASE + "#plan"); pg.wait_for_timeout(300)
+    assert pg.locator(".week-options").count() == 0 and pg.locator(".empty h2:text('Plan a week from a few big batches')").count() == 1
+    pg.goto(BASE + "#prep"); pg.wait_for_selector(".empty h2:text('Plan a week first')")
     pg.goto(BASE + "#plan"); pg.wait_for_timeout(300)
     t = time.time(); pg.click(".options .btn.primary"); pg.wait_for_selector(".week-options", timeout=60000)
     print("week planned in", round(time.time() - t, 1), "s")
     pg.wait_for_timeout(400); pg.screenshot(path=f"{OUT}/05-week.png", full_page=True)
     pg.click(".wopt >> nth=1"); pg.wait_for_timeout(2500)
     chosen = pg.inner_text(".panel-head .muted.small")
-    d = remote_doc(); assert d["current_week"] and d["current_week"]["choice"] == 1 and d["week_options"]
+    d = remote_doc(); assert d["current_week"] and d["current_week"]["choice"] == 1 and d["week_options"] and d["current_week"]["week_of"]
+    # add a dish to a day through the cookbook pop-up
+    pg.click(".day >> nth=0 >> .add-dish"); pg.wait_for_selector(".modal.wide .pcard"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/05b-picker.png")
+    before = pg.locator(".day >> nth=0 >> .dish").count()
+    pg.fill(".picker-tools input", "brown rice"); pg.wait_for_timeout(300)
+    pg.click(".modal.wide .pcard >> nth=0"); pg.wait_for_timeout(800)
+    assert pg.locator(".modal.wide").count() == 0
+    assert pg.locator(".day >> nth=0 >> .dish").count() >= before
 
     # build around + day ideas
-    pg.select_option(".anchors select", label="Black Bean, Sweet Potato & TVP Chili")
-    pg.click("text=Day ideas"); pg.click("text=Find combinations"); pg.wait_for_selector(".combo", timeout=60000); pg.wait_for_timeout(300)
+    pg.click(".anchors .btn"); pg.wait_for_selector(".modal.wide .pcard")
+    pg.click(".modal.wide .pcard:has-text('Black Bean, Sweet Potato & TVP Chili')")
+    assert "Black Bean" in pg.inner_text(".anchors")
+    pg.click("text=Day ideas"); assert pg.locator(".empty h2:text('Find day ideas')").count() == 1
+    pg.click(".empty >> text=Find combinations"); pg.wait_for_selector(".combo", timeout=60000); pg.wait_for_timeout(300)
     pg.screenshot(path=f"{OUT}/06-ideas.png")
     assert pg.locator(".combo .anchor-mark").count() >= 3
     pg.click(".combo >> nth=0 >> text=Open in day builder"); pg.wait_for_timeout(800)
@@ -261,18 +274,31 @@ with sync_playwright() as p:
     # tracker: today is pre-filled from the plan; check things off
     pg.goto(BASE + "#tracker"); pg.wait_for_selector(".meals", timeout=10000); pg.wait_for_timeout(300)
     n_items = pg.locator(".meal").count()
+    if n_items == 0:   # on prep day the new plan is for next week, so today has nothing pre-filled
+        for name in ("Tofu Scramble", "Tempeh Bolognese"):
+            pg.click(".trk-add >> text=Add a dish"); pg.wait_for_selector(".modal.wide .pcard")
+            pg.click(f".modal.wide .pcard:has-text('{name}')"); pg.wait_for_timeout(600)
+        pg.evaluate("() => { S.trk.day.items.forEach(i => { i.eaten = false; }); }")
+        n_items = pg.locator(".meal").count()
     pg.click("text=Ate everything"); pg.wait_for_timeout(800)
     today = pg.evaluate("Z.tracker.dayKey(new Date())")
     score = pg.evaluate(f"Z.store.S.doc.logs.find(l => l.date === '{today}').score")
     print("tracker items", n_items, "score", score)
     assert n_items >= 2 and score > 0
+    # Clear empties the day (and the plan doesn't refill it)
+    pg.once("dialog", lambda dlg: dlg.accept())
+    pg.click(".trk-add >> text=Clear"); pg.wait_for_timeout(800)
+    assert pg.locator(".meal").count() == 0 and pg.evaluate(f"Z.store.S.doc.logs.find(l => l.date === '{today}').items.length") == 0
+    pg.click(".trk-add >> text=Add a dish"); pg.wait_for_selector(".modal.wide .pcard"); pg.click(".modal.wide .pcard >> nth=0"); pg.wait_for_timeout(600)
+    assert pg.locator(".meal").count() == 1
     # fill four good weeks this month directly, to see cheeks and a sticker
     pg.evaluate("""() => { const T = Z.tracker; const s = T.weekStart(T.dayKey(new Date()), 'Monday');
       for (let w = 1; w <= 8; w++) for (let d = 0; d < 6; d++) { const k = T.addDays(s, -7 * w + d);
         Z.store.upsert('logs', { id: 'log-' + k, date: k, items: [], score: 88 + d, eaten: 3 }); } }""")
     pg.evaluate("S.trk = null"); pg.goto(BASE + "#plan"); pg.goto(BASE + "#tracker"); pg.wait_for_selector(".cheeks", timeout=10000); pg.wait_for_timeout(400)
     pg.screenshot(path=f"{OUT}/17-tracker.png", full_page=True)
-    assert pg.locator(".cheeks .w.done").count() >= 2 and pg.locator(".shelf .sticker:not(.empty)").count() >= 1
+    assert pg.locator(".cheeks .w.done").count() >= 2 and pg.locator(".shelf .sticker:not(.locked)").count() >= 1
+    assert pg.evaluate("[...document.querySelectorAll('.shelf img')].every(i => i.complete && i.naturalWidth > 0)"), "sticker images load"
     pg.goto(BASE + "#settings"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/11-settings.png")
     pg.click("text=Check scanning"); pg.wait_for_timeout(500)
     assert "Scanning works" in pg.inner_text(".panel:has-text('Scanning')")
@@ -291,6 +317,8 @@ with sync_playwright() as p:
     ph.goto(BASE + "#recipe/" + rid); ph.wait_for_selector(".hero img[src^='blob:']", timeout=10000); ph.wait_for_timeout(400)
     print("phone scrollWidth (recipe)", ph.evaluate("document.documentElement.scrollWidth"))
     ph.screenshot(path=f"{OUT}/13b-phone-recipe.png", full_page=True)
+    ph.goto(BASE + "#plan"); ph.wait_for_selector(".add-dish"); ph.click(".add-dish >> nth=0"); ph.wait_for_selector(".modal.wide .pcard"); ph.wait_for_timeout(500)
+    ph.screenshot(path=f"{OUT}/13d-phone-picker.png"); ph.keyboard.press("Escape")
     ph.goto(BASE + "#tracker"); ph.wait_for_selector(".cheeks", timeout=10000); ph.wait_for_timeout(500)
     print("phone scrollWidth (tracker)", ph.evaluate("document.documentElement.scrollWidth"))
     assert ph.evaluate("document.documentElement.scrollWidth") <= 390, "no sideways scrolling on the phone"
@@ -311,8 +339,20 @@ with sync_playwright() as p:
     assert d["settings"]["profile"]["name"] == "phone edit", "phone edit kept"
     assert any(s["name"] == "Vegan D3" for s in d["settings"]["supplements"]), "desktop edit kept"
 
+    # an old week's plan stops showing once its week is over
+    pg.goto(BASE + "#plan"); pg.click("text=Week plan"); pg.wait_for_selector(".week")
+    pg.evaluate("() => { const cw = JSON.parse(JSON.stringify(Z.store.S.doc.current_week)); cw.week_of = '2020-01-06'; Z.store.setDocField('current_week', cw); }")
+    pg.wait_for_timeout(2500)
+    pg.reload(); pg.wait_for_selector(".page-head h1:text('Plan')"); pg.wait_for_timeout(800)
+    assert pg.locator(".week").count() == 0 and pg.locator(".week-options").count() == 0, "stale plan hidden"
+    pg.click(".options .btn.primary"); pg.wait_for_selector(".week", timeout=60000); pg.wait_for_timeout(500)
+    pg.once("dialog", lambda dlg: dlg.accept())
+    pg.click("text=Clear plan"); pg.wait_for_timeout(1500)
+    assert pg.locator(".week").count() == 0 and remote_doc()["current_week"] is None
+    pg.goto(BASE + "#prep"); pg.wait_for_selector(".empty h2:text('Plan a week first')")
+
     dk = new_page(viewport={"width": 1440, "height": 1000}, color_scheme="dark")
-    dk.goto(link); dk.wait_for_selector(".week", timeout=20000); dk.wait_for_timeout(800)
+    dk.goto(link); dk.wait_for_selector(".page-head h1", timeout=20000); dk.wait_for_timeout(800)
     dk.screenshot(path=f"{OUT}/14-dark.png")
     b.close()
 srv.shutdown()

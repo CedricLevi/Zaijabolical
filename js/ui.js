@@ -241,8 +241,34 @@ async function refreshAfterSupplementChange() {
   if (S.combos) S.combos = null;
   render();
 }
+/* A week plan belongs to one week: the week that starts after tomorrow's prep (planning on prep-day Sunday plans
+   Monday's week; planning mid-week plans the current one). Once that week is over, the plan stops showing. */
+const todayKey = () => Z.tracker.dayKey(new Date());
+const upcomingWeekOf = () => Z.tracker.weekStart(Z.tracker.addDays(todayKey(), 1), S.data.settings.week.start_day || "Monday");
+const planIsCurrent = weekOf => !!weekOf && Z.tracker.weekStart(todayKey(), S.data.settings.week.start_day || "Monday") <= weekOf;
+const weekOfLabel = k => Z.tracker.parseDay(k).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+async function loadCurrentWeek() {
+  S.week = null; S.weekName = null; S.weekOf = null; S.weekOptions = null; S.anchors = [];
+  const cw = await api("GET", "/api/week/current");
+  if (!cw || !cw.data || !planIsCurrent(cw.week_of)) return;
+  S.week = cw.data; S.weekName = cw.name; S.weekOf = cw.week_of;
+  if (cw.choice != null) {
+    const wo = await api("GET", "/api/week/options");
+    if (wo && wo.options && wo.options[cw.choice]) {
+      S.weekOptions = wo.options; S.weekRecommended = wo.recommended; S.weekChoice = cw.choice;
+      S.anchors = wo.anchors || [];
+    }
+  }
+}
+async function clearPlan() {
+  if (!confirm("Clear this week's plan? The prep sheet and the tracker's pre-filled meals are cleared with it.")) return;
+  S.week = null; S.weekName = null; S.weekOf = null; S.weekOptions = null; S.anchors = []; S.selDay = null; S.trk = null;
+  await persistWeek(); await persistWeekOptions();
+  toast("Plan cleared");
+  render();
+}
 async function persistWeek() {
-  try { await api("PUT", "/api/week/current", { value: S.week ? { name: S.weekName, data: S.week, choice: S.weekOptions ? S.weekChoice : null } : null }); }
+  try { await api("PUT", "/api/week/current", { value: S.week ? { name: S.weekName, data: S.week, week_of: S.weekOf || upcomingWeekOf(), choice: S.weekOptions ? S.weekChoice : null } : null }); }
   catch { /* best effort */ }
 }
 async function persistWeekOptions() {
@@ -366,15 +392,10 @@ function anchorPicker(label) {
       h("button", { "aria-label": "Stop building around " + r.name, title: "Remove",
         onclick: () => { S.anchors = S.anchors.filter(x => x !== id); render(); } }, svg("x"))));
   }
-  const pick = h("select", { "aria-label": "Choose a dish to build around", onchange: e => {
-    const id = e.target.value; if (!id) return;
-    if (!S.anchors.includes(id)) S.anchors.push(id);
-    render();
-  } }, h("option", { value: "" }, S.anchors.length ? "+ Add another" : "+ Choose a dish"),
-    CATS.map(c => h("optgroup", { label: c }, S.data.recipes
-      .filter(r => r.category === c && r.active && r.ingredients.length && !S.anchors.includes(r.id))
-      .map(r => h("option", { value: r.id }, r.name)))));
-  wrap.append(pick);
+  wrap.append(h("button", { class: "btn sm", onclick: () => pickRecipe({
+    title: "Choose a dish to build around", exclude: S.anchors, onlyActive: true,
+    onPick: r => { if (!S.anchors.includes(r.id)) S.anchors.push(r.id); render(); } }) },
+    svg("plus"), S.anchors.length ? "Add another" : "Choose a dish"));
   return wrap;
 }
 
@@ -400,7 +421,7 @@ function planWeek() {
       sel("Week starts", "start_day"),
       h("div", { class: "row", style: { marginLeft: "auto" } },
         saved.length ? h("select", { style: { width: "auto" }, "aria-label": "Open a saved week",
-          onchange: async e => { if (!e.target.value) return; const p = await api("GET", `/api/plans/${e.target.value}`); S.week = p.data; S.weekName = p.name; S.weekOptions = null; S.selDay = null; persistWeek(); persistWeekOptions(); render(); } },
+          onchange: async e => { if (!e.target.value) return; const p = await api("GET", `/api/plans/${e.target.value}`); S.week = p.data; S.weekName = p.name; S.weekOf = upcomingWeekOf(); S.weekOptions = null; S.selDay = null; S.trk = null; persistWeek(); persistWeekOptions(); render(); } },
           h("option", { value: "" }, "Open saved week…"), saved.map(p => h("option", { value: p.id }, p.name))) : null,
         planBtn())),
     h("div", { style: { marginTop: "14px" } }, anchorPicker("Build around"))));
@@ -412,7 +433,7 @@ function planWeek() {
     const b = planBtn();
     root.append(h("div", { class: "empty", style: { marginTop: "16px" } },
       h("h2", null, "Plan a week from a few big batches"),
-      h("p", null, "The planner finds small sets of dishes (3 to 4 by default) that you can cook on prep day and eat all week while hitting her targets. You'll get a few options to choose from. Pick a dish under Build around to plan the week around it."),
+      h("p", null, `The planner finds small sets of dishes (3 to 4 by default) to cook on prep day and eat all week while hitting her targets. You'll get a few options to choose from for the week of ${weekOfLabel(upcomingWeekOf())}. Pick a dish under Build around to plan the week around it.`),
       b));
     return root;
   }
@@ -424,11 +445,12 @@ function planWeek() {
   const grid = h("div", { class: "week" });
   W.days.forEach((d, i) => grid.append(dayColumn(d, i)));
   const head = h("div", { class: "panel-head" },
-    h("div", null, h("h2", null, S.weekName || "This week"),
+    h("div", null, h("h2", null, (S.weekName ? S.weekName + " · " : "") + "Week of " + weekOfLabel(S.weekOf || upcomingWeekOf())),
       h("div", { class: "muted small" }, `${cooked.length} dish${cooked.length === 1 ? "" : "es"} to cook: ${cooked.join(", ")}. Tap a day to see its numbers.`)),
     h("div", { class: "row no-print" },
       h("span", { class: "score", title: "Average coverage of all enabled targets" }, Math.round(W.score), h("small", null, "/100 coverage")),
       h("button", { class: "btn", onclick: saveWeek }, "Save week"),
+      h("button", { class: "btn ghost danger", onclick: clearPlan }, svg("x"), "Clear plan"),
       h("a", { class: "btn", href: "#prep" }, svg("prep"), "Prep sheet")));
   root.append(h("div", { class: "panel", style: { marginTop: "16px" } }, head, grid));
   const barsPanel = h("div", { class: "panel" },
@@ -462,7 +484,8 @@ function weekOptionsPanel() {
 function chooseWeekOption(i) {
   S.weekChoice = i;
   S.week = JSON.parse(JSON.stringify(S.weekOptions[i]));
-  S.weekName = null; S.selDay = null;
+  S.weekName = null; S.selDay = null; S.trk = null;
+  if (!S.weekOf) S.weekOf = upcomingWeekOf();
   persistWeek();
   render();
 }
@@ -487,11 +510,8 @@ function dayColumn(d, i) {
           h("button", { title: "More", "aria-label": "More " + it.name, onclick: () => editDay(i, j, 0.5) }, "+"))),
       it.warning || (r && it.source === "freezer" && !r.freezes) ? h("span", { class: "warn" }, it.warning || "Doesn't freeze well") : null));
   }
-  const add = h("select", { "aria-label": "Add a dish to " + d.day, onchange: e => { if (e.target.value) addToDay(i, e.target.value); } },
-    h("option", { value: "" }, "+ Add dish"),
-    CATS.map(c => h("optgroup", { label: c }, S.data.recipes.filter(r => r.category === c && r.ingredients.length)
-      .map(r => h("option", { value: r.id }, r.name)))));
-  col.append(h("div", { class: "add no-print" }, add));
+  col.append(h("div", { class: "add no-print" }, h("button", { class: "btn sm add-dish", "aria-label": "Add a dish to " + d.day,
+    onclick: () => pickRecipe({ title: `Add a dish to ${d.day}`, onPick: r => addToDay(i, r.id) }) }, svg("plus"), "Add dish")));
   return col;
 }
 async function runWeek() {
@@ -503,6 +523,7 @@ async function runWeek() {
     } else {
       S.weekOptions = res.options;
       S.weekRecommended = res.recommended;
+      S.weekOf = upcomingWeekOf(); S.trk = null;
       S.busy = false;
       persistWeekOptions();
       chooseWeekOption(res.recommended);
@@ -552,7 +573,13 @@ function planIdeas() {
     h("button", { class: "btn primary", onclick: runIdeas }, svg("sparkle"), S.combos ? "Find again" : "Find combinations")),
     h("div", { style: { marginTop: "14px" } }, anchorPicker("Build around"))));
   if (S.busy) { root.append(loading("Searching combinations…")); return root; }
-  if (!S.combos) return root;
+  if (!S.combos) {
+    root.append(h("div", { class: "empty", style: { marginTop: "16px" } },
+      h("h2", null, "Find day ideas"),
+      h("p", null, "Get the best single-day combinations of your recipes. Pick a dish under Build around first if you want every idea to include it."),
+      h("button", { class: "btn primary", onclick: runIdeas }, svg("sparkle"), "Find combinations")));
+    return root;
+  }
   if (S.combos.message) { root.append(h("div", { class: "banner", style: { marginTop: "16px" } }, svg("alert"), S.combos.message)); return root; }
   const grid = h("div", { class: "combos", style: { marginTop: "16px" } });
   S.combos.combos.forEach((c, n) => {
@@ -605,13 +632,11 @@ function planBuild() {
           h("button", { "aria-label": "More", onclick: () => { it.servings += 0.5; render(); evalBuilder(); } }, "+")),
         h("button", { class: "icon-btn", "aria-label": "Remove", onclick: () => { S.builder.splice(idx, 1); render(); evalBuilder(); } }, svg("x")))));
   });
-  const add = h("select", { onchange: e => {
-    const id = e.target.value; if (!id) return;
-    const ex = S.builder.find(x => x.recipe_id === id);
-    if (ex) ex.servings += 1; else S.builder.push({ recipe_id: id, servings: 1 });
+  const add = h("button", { class: "btn", onclick: () => pickRecipe({ title: "Add a recipe to her day", onPick: r => {
+    const ex = S.builder.find(x => x.recipe_id === r.id);
+    if (ex) ex.servings += 1; else S.builder.push({ recipe_id: r.id, servings: 1 });
     render(); evalBuilder();
-  } }, h("option", { value: "" }, "+ Add a recipe"),
-    CATS.map(c => h("optgroup", { label: c }, S.data.recipes.filter(r => r.category === c && r.ingredients.length).map(r => h("option", { value: r.id }, r.name)))));
+  } }) }, svg("plus"), "Add a recipe");
   const ev = S.builderEval;
   const left = h("div", null,
     h("div", { class: "panel" },
@@ -900,7 +925,7 @@ function viewPrep() {
     return root;
   }
   const P = W.prep;
-  root.append(pageHead(`Prep day${S.weekName ? ": " + S.weekName : ""}`,
+  root.append(pageHead(`Prep day · week of ${weekOfLabel(S.weekOf || upcomingWeekOf())}`,
     "Approximate prep and cook time with instructions. Shopping list included!",
     h("button", { class: "btn no-print", onclick: () => print() }, svg("print"), "Print")));
   const key = "shop-" + (S.weekName || "current");
@@ -1223,19 +1248,7 @@ async function boot() {
   }
   Z.store.onChange(refreshSyncBadge);
   await reload();
-  try {
-    const cw = await api("GET", "/api/week/current");
-    if (cw && cw.data) {
-      S.week = cw.data; S.weekName = cw.name;
-      if (cw.choice != null) {
-        const wo = await api("GET", "/api/week/options");
-        if (wo && wo.options && wo.options[cw.choice]) {
-          S.weekOptions = wo.options; S.weekRecommended = wo.recommended; S.weekChoice = cw.choice;
-          S.anchors = wo.anchors || [];
-        }
-      }
-    }
-  } catch { /* a saved week is optional */ }
+  try { await loadCurrentWeek(); } catch { /* a saved week is optional */ }
   window.addEventListener("hashchange", route);
   // pick up changes made on the other device when coming back to the app
   document.addEventListener("visibilitychange", async () => {
@@ -1244,7 +1257,8 @@ async function boot() {
     await Z.store.pull();
     if (JSON.stringify(Z.store.S.doc) !== before && !document.querySelector(".scrim")) {
       await reload();
-      try { const cw = await api("GET", "/api/week/current"); if (cw && cw.data) { S.week = cw.data; S.weekName = cw.name; } } catch { /* ignore */ }
+      try { await loadCurrentWeek(); } catch { /* ignore */ }
+      S.trk = null;
       render();
     }
   });

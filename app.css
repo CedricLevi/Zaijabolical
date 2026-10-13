@@ -747,3 +747,32 @@ textarea.short { min-height: 70px; }
 .meal .nm { overflow-wrap: anywhere; }
 
 .theme-panel { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; margin-bottom: 16px; }
+
+/* recipe picker pop-up */
+.modal.wide { width: min(1040px, 100%); height: min(860px, 92vh); }
+.picker-tools { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 12px 22px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.picker-tools .rsearch { max-width: 260px; border-radius: 999px; padding-left: 14px; }
+.picker-tools .seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.picker-cards { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.picker-cards .pcard .ph { height: 120px; }
+@media (max-width: 640px) {
+  .scrim.center:has(.modal.wide) { padding: 0; }
+  .modal.wide { height: 100%; max-height: none; border-radius: 0; }
+  .picker-tools { padding: 10px 14px; }
+  .picker-tools .rsearch { max-width: none; flex: 1 1 100%; }
+  .picker-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .picker-cards .pcard .ph { height: 96px; }
+  .picker-cards .pcard .ph .over h3 { font-size: 14.5px; }
+  .picker-cards .pcard .bd { padding: 8px 10px 10px; gap: 6px; }
+  .picker-cards .macros b { font-size: 13px; }
+  .picker-cards .fp { display: none; }
+}
+.day .add .add-dish { width: 100%; }
+/* month stickers */
+.sticker { position: relative; padding: 4px 4px 14px; }
+.sticker img { display: block; width: 104px; height: 104px; }
+.sticker .pill-label { position: absolute; left: 50%; bottom: 4px; transform: translateX(-50%); background: var(--leaf); color: #fff;
+  font: 600 11.5px/1 var(--display); padding: 4px 9px; border-radius: 99px; white-space: nowrap; }
+.sticker.locked { background: transparent; box-shadow: none; border: 2px dashed var(--line); }
+.sticker.locked img { filter: grayscale(1); opacity: .35; }
+.sticker.locked .pill-label { background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
