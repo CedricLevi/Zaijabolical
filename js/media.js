@@ -114,20 +114,32 @@
     }
     return false;
   }
-  let flushing = null;
-  /** upload anything saved on this device that isn't on GitHub yet */
+  let flushing = null, again = false, retryTimer = null;
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  /** upload anything saved on this device that isn't on GitHub yet (one at a time, gently, so a big cookbook
+      import doesn't trip GitHub's limits; if it does, wait and carry on) */
   function flush() {
     if (!cfg()) return Promise.resolve(0);
-    if (flushing) return flushing;
+    if (flushing) { again = true; return flushing; }
     flushing = (async () => {
       let n = 0;
       try {
-        const keys = await idbKeys();
-        for (const path of keys) {
-          const rec = await idbGet(path);
-          if (!rec || rec.uploaded) continue;
-          try { if (await uploadOne(path, rec)) n++; else break; } catch { break; }
-        }
+        do {
+          again = false;
+          const keys = await idbKeys();
+          for (const path of keys) {
+            const rec = await idbGet(path);
+            if (!rec || rec.uploaded) continue;
+            let ok = false;
+            try { ok = await uploadOne(path, rec); } catch { ok = false; }
+            if (!ok) {   // offline or rate-limited: try again in a minute
+              clearTimeout(retryTimer); retryTimer = setTimeout(flush, 60000);
+              return n;
+            }
+            n++;
+            await wait(700);
+          }
+        } while (again);
       } finally { flushing = null; }
       return n;
     })();
@@ -238,5 +250,6 @@
   async function pendingCount() { return (await idbAll()).filter(r => r && !r.uploaded).length; }
 
   if (typeof window !== "undefined") window.addEventListener("online", () => flush());
-  Z.media = { addPhoto, addAttachment, url, remove, open, flush, scanImage, blobToB64, pendingCount, MAX_ATTACHMENT, RASTER };
+  Z.media = { addPhoto, addAttachment, url, remove, open, flush, scanImage, blobToB64, pendingCount, MAX_ATTACHMENT, RASTER,
+    blob: (path, type) => getBlob(path, type) };
 })(globalThis.Z = globalThis.Z || {});

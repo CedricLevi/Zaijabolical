@@ -40,7 +40,7 @@
   function recipeMap() { return Object.fromEntries(doc().recipes.map(r => [r.id, r])); }
   function recipeOut(r, ingById) {
     const nut = Z.recipeNutrition(r, ingById);
-    const unlinked = (r.ingredients || []).filter(l => !ingById[l.ingredient_id] && l.name).length;
+    const unlinked = (r.ingredients || []).filter(l => !ingById[l.ingredient_id] && l.name && !l.ignore).length;
     return { ...clone(r), nutrition: { per_serving: nut.per_serving, missing: nut.missing,
       grams_per_serving: nut.grams_per_serving, problems: nut.problems, amino: Z.recipeAmino(r, ingById, 1), unlinked } };
   }
@@ -182,7 +182,7 @@
     // a line needs a pantry ingredient, or at least a name (scanned lines waiting to be linked)
     r.ingredients = (r.ingredients || []).filter(l => l.ingredient_id || String(l.name || "").trim())
       .map(l => (l.ingredient_id ? { ingredient_id: l.ingredient_id, amount: l.amount, unit: l.unit, note: l.note || "" }
-        : { ingredient_id: null, name: String(l.name).trim(), amount: l.amount, unit: l.unit || "", note: l.note || "" }));
+        : { ingredient_id: null, name: String(l.name).trim(), amount: l.amount, unit: l.unit || "", note: l.note || "", ...(l.ignore ? { ignore: true } : {}) }));
     return r;
   }
   function cleanIngredient(d) {
@@ -402,7 +402,7 @@
     try {
       res = await fetch("api/scan", { method: "POST", cache: "no-store",
         headers: { "Content-Type": "application/json", "X-Zaija-Key": gh.token, "X-Zaija-Repo": `${gh.owner}/${gh.repo}` },
-        body: JSON.stringify({ kind: body.kind, images: body.images || [] }) });
+        body: JSON.stringify({ kind: body.kind, images: body.images || [], text: body.text, candidates: body.candidates }) });
     } catch { throw new ApiError("Couldn't reach the scanner. Check your internet connection (scanning only works on the website)."); }
     let data = null;
     try { data = await res.json(); } catch { /* not json */ }

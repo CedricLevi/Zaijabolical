@@ -39,6 +39,17 @@ Copy what is written; do not invent ingredients, amounts or steps. Return only J
 - notes: any tips, storage or serving notes, else ""
 If there are several photos, they are consecutive pages of the same recipe.`;
 
+const TEXT_PROMPT = `Below is text from a cookbook. Find every complete recipe in it (a title with ingredients and a method).
+Skip essays, stories, tables of contents and anything that isn't a recipe. Copy the wording; don't invent anything.
+Return only JSON: {"recipes": [ ... ]}, each recipe with these fields:
+- name, servings (number or null), category ("Breakfast", "Main", "Side", "Snack" or "Add-on"), prep_min, cook_min (numbers if stated, else null)
+- description: the intro/headnote if any, else ""
+- ingredients: [{name, amount (number or null), unit, note, text (the original line)}], one per ingredient. If the recipe is written as prose, pull the ingredients out of the sentences.
+- steps: the method as a list of strings
+- notes: tips or variations, else ""
+If there are no recipes, return {"recipes": []}.`;
+const PHOTO_PROMPT = n => `This photo is from a cookbook. Which of these ${n} recipes does it show? Reply with JSON only: {"index": number} using the number from the list, or {"index": -1} if it shows none of them.`;
+
 const LABEL_NUTRIENTS = ["calories", "total_fat", "saturated_fat", "trans_fat", "cholesterol", "sodium", "total_carbohydrate",
   "dietary_fiber", "total_sugars", "added_sugars", "protein", "vitamin_d", "calcium", "iron", "potassium", "vitamin_a", "vitamin_c",
   "vitamin_e", "vitamin_k", "thiamin", "riboflavin", "niacin", "vitamin_b6", "folate", "vitamin_b12", "biotin", "pantothenic_acid",
@@ -66,6 +77,8 @@ const RECIPE_SCHEMA = {
   },
   required: ["name", "ingredients", "steps"],
 };
+const TEXT_SCHEMA = { type: "object", properties: { recipes: { type: "array", items: RECIPE_SCHEMA } }, required: ["recipes"] };
+const PHOTO_SCHEMA = { type: "object", properties: { index: { type: "number" } }, required: ["index"] };
 const NUT_VALUE = { type: "object", properties: { amount: { type: ["number", "null"] }, unit: { type: "string" }, dv: { type: ["number", "null"] } } };
 const LABEL_SCHEMA = {
   type: "object",
@@ -112,8 +125,8 @@ function parseJson(out) {
 async function workersAi(env, prompt, schema, image) {
   const model = env.AI_MODEL || WORKERS_MODEL;
   const messages = [
-    { role: "system", content: "You turn photos of food documents into accurate JSON. Reply with JSON only." },
-    { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: image } }] },
+    { role: "system", content: "You turn cookbook pages and photos into accurate JSON. Reply with JSON only." },
+    { role: "user", content: image ? [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: image } }] : prompt },
   ];
   let out;
   try {
@@ -159,12 +172,35 @@ export async function onRequestPost({ request, env }) {
   try { body = await request.json(); } catch { return json({ error: "Bad request" }, 400); }
   if (body.kind === "ping") return json({ ok: !!engine, engine });
   if (!engine) return json({ error: "Scanning isn't switched on yet: in Cloudflare, add a Workers AI binding named AI to the zaijabolical Pages project, then redeploy." }, 503);
-  if (!["recipe", "label"].includes(body.kind)) return json({ error: "Unknown scan type" }, 400);
+  if (body.kind === "text") {   // cookbook text (EPUB/PDF import): no photo
+    const text = String(body.text || "");
+    if (!text.trim() || text.length > 24000) return json({ error: "Send between 1 and 24,000 characters of text." }, 400);
+    try {
+      const prompt = TEXT_PROMPT + "\n\n---\n" + text;
+      const result = engine === "claude" ? await claude(env, prompt, []) : await workersAi(env, prompt, TEXT_SCHEMA, null);
+      return json({ kind: "text", engine, result: { recipes: Array.isArray(result.recipes) ? result.recipes : [] } });
+    } catch (e) {
+      return json({ error: "That part of the book couldn't be read. (" + String(e.message || e).slice(0, 160) + ")" }, 502);
+    }
+  }
+  if (!["recipe", "label", "photo"].includes(body.kind)) return json({ error: "Unknown scan type" }, 400);
   const images = Array.isArray(body.images) ? body.images : [];
   if (!images.length || images.length > MAX_IMAGES) return json({ error: `Send 1 to ${MAX_IMAGES} photos.` }, 400);
   for (const img of images) {
     if (typeof img !== "string" || img.length > MAX_IMAGE_CHARS || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(img))
       return json({ error: "Photos must be JPEG, PNG or WebP under about 3 MB." }, 400);
+  }
+  if (body.kind === "photo") {   // which of these recipes does this cookbook photo show?
+    const names = (Array.isArray(body.candidates) ? body.candidates : []).slice(0, 6).map(x => String(x).slice(0, 120));
+    if (!names.length) return json({ error: "No recipe names sent." }, 400);
+    try {
+      const prompt = PHOTO_PROMPT(names.length) + "\n" + names.map((n, i) => `${i}. ${n}`).join("\n");
+      const result = engine === "claude" ? await claude(env, prompt, images.slice(0, 1)) : await workersAi(env, prompt, PHOTO_SCHEMA, images[0]);
+      const index = Number(result.index);
+      return json({ kind: "photo", engine, result: { index: Number.isInteger(index) && index >= 0 && index < names.length ? index : -1 } });
+    } catch (e) {
+      return json({ error: "The photo couldn't be matched. (" + String(e.message || e).slice(0, 160) + ")" }, 502);
+    }
   }
   const prompt = body.kind === "recipe" ? RECIPE_PROMPT : LABEL_PROMPT;
   const schema = body.kind === "recipe" ? RECIPE_SCHEMA : LABEL_SCHEMA;

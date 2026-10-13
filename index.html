@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://api.nal.usda.gov; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://api.nal.usda.gov; base-uri 'self'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>Zaijabolical</title>
 <meta name="description" content="Vegan meal-prep planner">
@@ -34,9 +34,12 @@
 <script src="js/planner.js"></script>
 <script src="js/store.js"></script>
 <script src="js/media.js"></script>
+<script src="js/zip.js"></script>
+<script src="js/cookbook.js"></script>
 <script src="js/api.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/ui-recipes.js"></script>
 <script src="js/ui-tracker.js"></script>
+<script src="js/ui-import.js"></script>
 </body>
 </html>

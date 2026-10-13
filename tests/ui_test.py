@@ -110,6 +110,12 @@ def handle_scan(route, request):
     if request.headers.get("x-zaija-key") != "test-token":
         return route.fulfill(status=401, content_type="application/json", body='{"error":"bad key"}')
     if b["kind"] == "ping": res = {"ok": True, "engine": "workers-ai"}
+    elif b["kind"] == "text":
+        assert "Garlic Bread Crumbs" in b["text"], b["text"][:200]
+        res = {"kind": "text", "engine": "workers-ai", "result": {"recipes": [{"name": "Garlic Bread Crumbs", "servings": 4, "category": "Add-on",
+            "ingredients": [{"name": "stale bread", "amount": 1, "unit": "cup", "text": "1 cup stale bread"}, {"name": "olive oil", "amount": 2, "unit": "tablespoons", "text": "2 tablespoons olive oil"},
+                            {"name": "garlic", "amount": 1, "unit": "clove", "text": "1 clove garlic"}], "steps": ["Blitz the bread into crumbs.", "Toast with the oil and garlic until golden."]}]}}
+    elif b["kind"] == "photo": res = {"kind": "photo", "engine": "workers-ai", "result": {"index": 0}}
     else:
         assert b["images"] and b["images"][0].startswith("data:image/jpeg;base64,")
         res = {"kind": b["kind"], "engine": "workers-ai", "result": SCAN_RECIPE if b["kind"] == "recipe" else SCAN_LABEL}
@@ -267,6 +273,68 @@ with sync_playwright() as p:
     assert abs(soy["nutrients"]["protein"] - 7 * 100 / 240) < 0.01 and abs(soy["nutrients"]["b12"] - 2.4 * 1.2 * 100 / 240) < 0.01, soy["nutrients"]
     assert soy["portions"][0]["grams"] == 240
 
+    # import cookbooks: tagged EPUB, then a PDF, then a plain EPUB that needs the AI
+    BOOKS = os.path.join(ROOT, "tests", "fixtures", "books")
+    before_n = len(remote_doc()["recipes"])
+    pg.goto(BASE + "#recipes"); pg.wait_for_timeout(300)
+    pg.click(".page-head >> text=Import cookbook"); pg.set_input_files(".modal input[type=file]", os.path.join(BOOKS, "tagged.epub"))
+    pg.wait_for_selector(".imp-row", timeout=20000); pg.wait_for_timeout(800)
+    pg.screenshot(path=f"{OUT}/18-import-review.png")
+    titles = pg.eval_on_selector_all(".imp-title", "els => els.map(e => e.value)")
+    ticked = pg.eval_on_selector_all(".imp-row input[type=checkbox]", "els => els.map(e => e.checked)")
+    print("import found:", list(zip(titles, ticked)))
+    assert titles == ["Smoky Black Bean Soup", "Peanut Tofu Noodles", "Lemony Lentil Salad", "Honey Butter Carrots"], titles
+    assert ticked == [True, True, True, False], "the non-vegan recipe starts unticked"
+    assert "Not vegan" in pg.inner_text(".imp-row >> nth=3")
+    assert pg.evaluate("document.querySelectorAll('.imp-row')[0].querySelector('.imp-thumb img').src.startsWith('blob:')"), "photo found for the soup"
+    pg.click(".drawer-head .btn.primary"); pg.wait_for_selector("#import-done", timeout=30000); pg.wait_for_timeout(2500)
+    d = remote_doc(); soup = next(r for r in d["recipes"] if r["name"] == "Smoky Black Bean Soup")
+    assert len(d["recipes"]) == before_n + 3 and not any(r["name"] == "Honey Butter Carrots" for r in d["recipes"])
+    assert soup["servings"] == 4 and soup["source"]["book"] == "Tagged Test Kitchen" and soup["category"] == "Main" and soup["description"]
+    assert len(soup["photos"]) == 1 and soup["attachments"][0]["type"] == "text/html", soup["attachments"]
+    assert any(l.get("ingredient_id") for l in soup["ingredients"]) and any(l.get("name") for l in soup["ingredients"])
+    pg.screenshot(path=f"{OUT}/18b-imported.png")
+    # the saved book page opens in a sandbox
+    pg.goto(BASE + "#recipe/" + soup["id"]); pg.wait_for_selector(".filerow"); pg.click(".filerow:has-text('book page')")
+    pg.wait_for_selector("iframe.page-frame"); assert pg.get_attribute("iframe.page-frame", "sandbox") == ""
+    assert "black beans" in pg.frame_locator("iframe.page-frame").locator("body").inner_text().lower()
+    pg.keyboard.press("Escape"); pg.click(".modal .icon-btn")
+
+    pg.goto(BASE + "#recipes"); pg.wait_for_timeout(300)
+    pg.click(".page-head >> text=Import cookbook"); pg.set_input_files(".modal input[type=file]", os.path.join(BOOKS, "book.pdf"))
+    pg.wait_for_selector(".imp-row", timeout=30000); pg.wait_for_timeout(1500)
+    titles = pg.eval_on_selector_all(".imp-title", "els => els.map(e => e.value)")
+    print("pdf found:", titles)
+    assert titles == ["Roasted Chickpea Wraps", "Coconut Red Lentil Curry"], titles
+    pg.screenshot(path=f"{OUT}/18c-import-pdf.png")
+    pg.click(".drawer-head .btn.primary"); pg.wait_for_selector("#import-done", timeout=40000); pg.wait_for_timeout(2500)
+    curry = next(r for r in remote_doc()["recipes"] if r["name"] == "Coconut Red Lentil Curry")
+    assert len(curry["photos"]) == 1 and curry["attachments"][0]["type"] == "image/jpeg" and curry["servings"] == 6
+
+    pg.click(".page-head >> text=Import cookbook"); pg.set_input_files(".modal input[type=file]", os.path.join(BOOKS, "plain.epub"))
+    pg.wait_for_selector(".imp-row", timeout=20000)
+    pg.click("text=Read with AI"); pg.wait_for_function("[...document.querySelectorAll('.imp-title')].some(e => e.value === 'Garlic Bread Crumbs')", timeout=20000)
+    titles = pg.eval_on_selector_all(".imp-title", "els => els.map(e => e.value)")
+    print("plain found:", titles)
+    assert "Green Tahini Sauce" in titles and "Quick Pickled Onions" in titles
+    pg.once("dialog", lambda dlg: dlg.accept())
+    pg.click(".drawer-head .btn.ghost"); pg.wait_for_timeout(300)   # cancel without importing
+
+    # link ingredients in bulk
+    pg.goto(BASE + "#link"); pg.wait_for_selector(".link-row", timeout=10000); pg.wait_for_timeout(300)
+    pg.screenshot(path=f"{OUT}/19-link.png", full_page=True)
+    n_before = pg.locator(".link-row").count()
+    if pg.locator(".link-tools .btn.primary").count(): pg.click(".link-tools .btn.primary"); pg.wait_for_timeout(4000)    # link every pantry match
+    if pg.locator(".link-row .btn:has-text('Maybe:')").count(): pg.click(".link-row .btn:has-text('Maybe:') >> nth=0"); pg.wait_for_timeout(1500)
+    n_after = pg.locator(".link-row").count()
+    print("link rows", n_before, "->", n_after)
+    assert n_after < n_before
+    pg.click(".link-tools >> text=Look up the rest in USDA"); pg.wait_for_timeout(n_after * 450 + 2000)
+    pg.screenshot(path=f"{OUT}/19b-link-usda.png", full_page=True)
+    nn = pg.locator(".link-row").count()
+    pg.click(".link-row >> nth=0 >> text=No nutrition"); pg.wait_for_timeout(1500)
+    assert pg.locator(".link-row").count() == nn - 1
+
     # prep + settings
     pg.goto(BASE + "#prep"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/10-prep.png", full_page=True)
     assert pg.locator(".prep-tl .lane").count() >= 2 and "start to finish" in pg.inner_text(".prep-tl")
@@ -319,6 +387,12 @@ with sync_playwright() as p:
     ph.screenshot(path=f"{OUT}/13b-phone-recipe.png", full_page=True)
     ph.goto(BASE + "#plan"); ph.wait_for_selector(".add-dish"); ph.click(".add-dish >> nth=0"); ph.wait_for_selector(".modal.wide .pcard"); ph.wait_for_timeout(500)
     ph.screenshot(path=f"{OUT}/13d-phone-picker.png"); ph.keyboard.press("Escape")
+    ph.goto(BASE + "#link"); ph.wait_for_timeout(800); ph.screenshot(path=f"{OUT}/13e-phone-link.png", full_page=True)
+    assert ph.evaluate("document.documentElement.scrollWidth") <= 390, "link screen fits the phone"
+    ph.goto(BASE + "#recipes"); ph.wait_for_timeout(500)
+    ph.click(".page-head .btn:has(svg) >> nth=0"); ph.set_input_files(".modal input[type=file]", os.path.join(ROOT, "tests", "fixtures", "books", "tagged.epub"))
+    ph.wait_for_selector(".imp-row", timeout=20000); ph.wait_for_timeout(800); ph.screenshot(path=f"{OUT}/13f-phone-import.png")
+    ph.once("dialog", lambda dlg: dlg.accept()); ph.click(".drawer-head .btn.ghost"); ph.wait_for_timeout(300)
     ph.goto(BASE + "#tracker"); ph.wait_for_selector(".cheeks", timeout=10000); ph.wait_for_timeout(500)
     print("phone scrollWidth (tracker)", ph.evaluate("document.documentElement.scrollWidth"))
     assert ph.evaluate("document.documentElement.scrollWidth") <= 390, "no sideways scrolling on the phone"

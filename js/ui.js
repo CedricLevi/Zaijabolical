@@ -289,7 +289,7 @@ function renderNav() {
   const nav = document.getElementById("nav");
   nav.querySelectorAll("a, .spacer, .theme-toggle, .sync-badge").forEach(n => n.remove());
   for (const [id, label, icon] of VIEWS) {
-    const on = S.view === id || (id === "recipes" && S.view === "recipe");
+    const on = S.view === id || (id === "recipes" && S.view === "recipe") || (id === "pantry" && S.view === "link");
     nav.append(h("a", { href: "#" + id, class: on ? "active" : "", "aria-current": on ? "page" : null },
       svg(icon), label));
   }
@@ -332,6 +332,7 @@ function route() {
   const v = (location.hash || "#plan").slice(1);
   const m = /^recipe\/(.+)$/.exec(v);
   if (m) { S.view = "recipe"; S.recipeId = decodeURIComponent(m[1]); }
+  else if (v === "link") S.view = "link";
   else S.view = VIEWS.some(x => x[0] === v) ? v : "plan";
   render();
   window.scrollTo(0, 0);
@@ -340,7 +341,7 @@ function render() {
   renderNav();
   const app = document.getElementById("app");
   app.replaceChildren();
-  const fn = { plan: viewPlan, recipes: viewRecipes, recipe: () => viewRecipe(S.recipeId), tracker: viewTracker,
+  const fn = { plan: viewPlan, recipes: viewRecipes, recipe: () => viewRecipe(S.recipeId), tracker: viewTracker, link: viewLink,
     pantry: viewPantry, prep: viewPrep, settings: viewSettings }[S.view];
   app.append(fn());
 }
@@ -657,7 +658,9 @@ function planBuild() {
 function viewPantry() {
   const root = h("div");
   const s = S.data.settings;
+  const toLink = unlinkedCount();
   root.append(pageHead("Pantry", "Ingredients and their nutrients per 100 g. Pull them from the USDA database or enter them from a package label.",
+    toLink ? h("a", { class: "btn", href: "#link" }, svg("chain"), `Link ingredients (${toLink})`) : null,
     h("button", { class: "btn primary", onclick: () => openAddIngredient("") }, svg("plus"), "Add ingredient")));
   if (!s.usda_api_key) root.append(apiKeyBanner());
   if (S.data.seeded < S.data.starter_count) {

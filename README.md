@@ -21,6 +21,8 @@ It runs entirely in the browser at **cedriclevi.com/zaijabolical**. Nothing is i
   - *List*: a sortable table.
   - Search, filter by rating and sort in every view. Tapping a recipe opens its page (photos, rating, about, ingredients, steps, nutrition, notes, links, attachments); **Edit** unlocks it, and **Print** gives a clean one-page version.
   - **Scan a recipe** turns a photo of a cookbook page or card into a draft recipe for you to check.
+  - **Import cookbook** reads a DRM-free EPUB or PDF you own, on your device, and lists the recipes it finds for you to tick. It uses the book's own recipe tags when it has them, then the page layout (titles, ingredient lines, "Serves 4", "Method"…), and offers to have the site's AI read anything left over. Photos are matched to recipes (with an optional AI check), the recipe's page from the book is attached, and anything that isn't vegan (meat, dairy, eggs, honey…) is flagged and left unticked.
+- **Pantry → Link ingredients:** imported and scanned recipes can contain ingredients that aren't in the pantry yet. This screen lists each one once (with how many recipes use it) so one tap links it everywhere: to a pantry match, a USDA lookup, or "no nutrition" for things like water.
 - **Tracker:** check off what she actually ate (the day's planned meals are filled in). Each day gets a coverage score. A good day scores 85+, 5 good days make a good week (the squirrel's cheeks fill), and 4 good weeks in a month earn a seasonal acorn sticker for that month. All three numbers are in Settings.
 - **Pantry:** ingredients with nutrients from USDA FoodData Central, typed in from a package label, or read from a photo of the label (*Scan the label*). *Import starters* adds 55 staples and 16 high-protein prep recipes.
 - **Prep day:** a timeline (longest-cooking dish first, prep the next while it simmers), step-by-step clock times, shopping list by aisle, fridge/freezer split and thaw reminders.
@@ -91,12 +93,16 @@ js/api.js             in-browser "API" the interface talks to; USDA client
 js/ui.js              the interface (plan, pantry, prep, settings)
 js/ui-recipes.js      recipe views, recipe page, editor, printing, scanning
 js/ui-tracker.js      the Tracker
+js/ui-import.js       cookbook import (review screen) and Link ingredients
+js/cookbook.js        reads EPUB/PDF cookbooks and finds the recipes in them
+js/zip.js             tiny ZIP reader for EPUB files
+vendor/pdfjs/         Mozilla pdf.js (Apache-2.0), loaded only when importing a PDF
 js/worker.js          runs the planner off the main thread
 functions/api/scan.js Cloudflare function that reads recipe/label photos
 tools/cloudflare-worker.js   serves the app at cedriclevi.com/zaijabolical
-tests/                node + Playwright tests (fake GitHub/USDA/scanner)
+tests/                node + Playwright tests (fake GitHub/USDA/scanner; make_books.py builds small test cookbooks)
 ```
-Run the tests with `node tests/core.test.js && node tests/planner.test.js && node tests/worker.test.mjs && node tests/scan.test.mjs && python tests/ui_test.py`.
+Run the tests with `node tests/core.test.js && node tests/planner.test.js && node tests/worker.test.mjs && node tests/scan.test.mjs && python tests/cookbook_test.py && python tests/ui_test.py`.
 
 ## Hosting setup (one time)
 1. **Cloudflare Pages:**

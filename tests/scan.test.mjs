@@ -41,4 +41,13 @@ assert.equal(aiCalls[0][1].messages[1].content[1].image_url.url, IMG);
 r = await onRequestPost({ request: req("good", { kind: "recipe", images: [IMG, IMG] }), env });
 const two = (await r.json()).result;
 assert.equal(two.ingredients.length, 2); assert.equal(two.steps.length, 2);
+// cookbook text and photo matching
+r = await onRequestPost({ request: req("good", { kind: "text", text: "Soup\n1 cup lentils\nSimmer." }), env });
+assert.equal(r.status, 200); assert.deepEqual((await r.json()).result, { recipes: [] });
+r = await onRequestPost({ request: req("good", { kind: "text", text: "x".repeat(30000) }), env });
+assert.equal(r.status, 400);
+r = await onRequestPost({ request: req("good", { kind: "photo", images: [IMG], candidates: ["Soup", "Salad"] }), env });
+assert.equal(r.status, 200); assert.equal((await r.json()).result.index, -1);
+const textCall = aiCalls.find(c => typeof c[1].messages[1].content === "string");
+assert.ok(textCall && textCall[1].messages[1].content.includes("1 cup lentils"), "text goes to the AI without a photo");
 console.log("scan function ok");

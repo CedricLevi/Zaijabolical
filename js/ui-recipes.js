@@ -153,6 +153,7 @@ function viewRecipes() {
   const root = h("div");
   const f = recipeFilterState();
   root.append(pageHead("Recipes", "Your cookbook! Scan using your phone camera or add manually.",
+    h("button", { class: "btn", onclick: () => openImportCookbook() }, svg("book"), h("span", { class: "hide-xs" }, "Import cookbook")),
     h("button", { class: "btn", onclick: () => openScanRecipe() }, svg("camera"), "Scan a recipe"),
     h("button", { class: "btn primary", onclick: () => openRecipe(null) }, svg("plus"), "New recipe")));
   if (!S.data.recipes.length) {
@@ -160,6 +161,7 @@ function viewRecipes() {
       h("p", null, "Scan one from a cookbook, write your own, or import the 16 starter recipes from the Pantry page."),
       h("div", { class: "row", style: { justifyContent: "center" } },
         h("button", { class: "btn primary", onclick: () => openScanRecipe() }, svg("camera"), "Scan a recipe"),
+        h("button", { class: "btn", onclick: () => openImportCookbook() }, svg("book"), "Import cookbook"),
         h("button", { class: "btn", onclick: () => openRecipe(null) }, "New recipe"),
         h("a", { class: "btn", href: "#pantry" }, "Import starters"))));
     return root;
@@ -300,7 +302,8 @@ function viewRecipe(id) {
     h("span", { class: "tag" }, `${fmtServ(r.servings)} servings`),
     r.freezes ? h("span", { class: "tag" }, svg("freezer"), "freezes") : h("span", { class: "tag" }, svg("fridge"), `${r.fridge_days} days in fridge`),
     (r.prep_min || r.cook_min) ? h("span", { class: "tag" }, `${r.prep_min || 0} min prep · ${r.cook_min || 0} min cook`) : null,
-    r.active ? null : h("span", { class: "tag" }, "not in plans"));
+    r.active ? null : h("span", { class: "tag" }, "not in plans"),
+    r.source && r.source.book ? h("span", { class: "tag", title: [r.source.book, r.source.chapter].filter(Boolean).join(" · ") }, svg("book"), r.source.book.split(/[:(]/)[0].trim()) : null);
   root.append(h("div", { class: "detail-meta" },
     stars(r.rating, { big: true, onRate: async v => {
       try { await api("PATCH", `/api/recipes/${r.id}`, { rating: v }); await reload(); render(); toast(v ? `Rated ${v} star${v > 1 ? "s" : ""}` : "Rating cleared"); }
@@ -308,7 +311,7 @@ function viewRecipe(id) {
     } }), chips));
   if (r.nutrition.unlinked) root.append(h("div", { class: "banner" }, svg("alert"),
     h("div", null, `${r.nutrition.unlinked} ingredient${r.nutrition.unlinked > 1 ? "s aren't" : " isn't"} linked to the pantry yet, so the nutrition leaves ${r.nutrition.unlinked > 1 ? "them" : "it"} out. `,
-      h("button", { class: "linklike", onclick: () => openRecipe(r) }, "Link in the editor"))));
+      h("a", { class: "linklike", href: "#link" }, "Link ingredients"))));
 
   const left = h("div");
   if (r.description) left.append(h("div", { class: "panel" }, h("h2", null, "About"), h("p", { class: "prose" }, r.description)));
@@ -318,7 +321,7 @@ function viewRecipe(id) {
       const ing = ingMapLocal[l.ingredient_id];
       return h("li", { class: ing ? "" : "unlinked" }, h("b", null, amountText(l, ing)),
         h("span", null, ing ? ing.name : l.name, l.note ? h("span", { class: "muted" }, ` · ${l.note}`) : null,
-          ing ? null : h("span", { class: "conf", title: "Not linked to a pantry ingredient" }, "not linked")));
+          ing ? null : l.ignore ? h("span", { class: "muted small" }, " (no nutrition)") : h("span", { class: "conf", title: "Not linked to a pantry ingredient" }, "not linked")));
     })) : h("p", { class: "muted" }, "No ingredients yet.")));
   const steps = stepLines(r.steps);
   left.append(h("div", { class: "panel" }, h("h2", null, "Steps"),
@@ -331,13 +334,17 @@ function viewRecipe(id) {
     r.links.map(l => h("a", { class: "linkrow", href: l.url, target: "_blank", rel: "noopener noreferrer" }, svg("link"),
       h("span", null, l.title || hostOf(l.url), l.title ? h("span", { class: "muted" }, " · " + hostOf(l.url)) : null)))));
   if ((r.attachments || []).length) right.append(h("div", { class: "panel" }, h("h2", null, "Attachments"),
-    r.attachments.map(a => h("button", { class: "filerow", onclick: () => Z.media.open(a).catch(e => toast(e.message, true)) },
+    r.attachments.map(a => h("button", { class: "filerow", onclick: () => openAttachment(a) },
       svg(/^image\//.test(a.type) ? "image" : "file"), h("span", null, a.name, h("span", { class: "muted" }, ` · ${fmtSize(a.size || 0)}`))))));
   right.append(h("div", { class: "row no-print", style: { marginTop: "16px" } },
     r.ingredients.length ? h("button", { class: "btn", onclick: () => planAround(r) }, svg("sparkle"), "Plan around this") : null,
     h("button", { class: "btn", onclick: () => duplicateRecipe(r) }, svg("copy"), "Duplicate")));
   root.append(h("div", { class: "dgrid" }, left, right));
   return root;
+}
+function openAttachment(a) {
+  if (a.type === "text/html") openHtmlAttachment(a);
+  else Z.media.open(a).catch(e => toast(e.message, true));
 }
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; } }
 function planAround(r) {
@@ -423,7 +430,9 @@ function mapUnit(amount, unit, ing) {
 const STOP = new Set(["fresh", "chopped", "diced", "minced", "sliced", "large", "small", "medium", "organic", "raw", "finely", "roughly", "thinly",
   "of", "and", "or", "to", "taste", "optional", "a", "an", "the", "for", "plus", "more", "extra", "about", "cup", "cups", "tbsp", "tsp", "packed",
   "heaping", "level", "whole", "pinch", "dash", "unsalted", "low", "sodium", "reduced", "boneless", "frozen", "thawed", "drained", "rinsed", "can",
-  "cans", "canned", "cooked", "uncooked", "dry", "dried", "ground", "peeled", "into", "cut", "pieces", "piece", "pressed", "crumbled", "store", "bought"]);
+  "cans", "canned", "cooked", "uncooked", "dry", "dried", "ground", "peeled", "into", "cut", "pieces", "piece", "pressed", "crumbled", "store", "bought",
+  "grated", "shredded", "cubed", "halved", "quartered", "zested", "juiced", "melted", "softened", "toasted", "crushed", "trimmed", "torn", "divided",
+  "room", "temperature", "hot", "cold", "warm", "boiling", "filtered", "fine", "coarse", "coarsely", "plus", "extra", "virgin", "good", "quality", "unsweetened", "plain"]);
 const SYN = { garbanzo: "chickpea", nooch: "nutritional", scallion: "green", coriander: "cilantro", tamari: "soy", courgette: "zucchini",
   aubergine: "eggplant", capsicum: "pepper", mince: "crumble", rolled: "oat", oatmeal: "oat" };
 function tokens(s) {
@@ -432,7 +441,9 @@ function tokens(s) {
     .map(w => SYN[w] || w);
 }
 /** pantry ingredient that best matches a scanned name, or null */
-function matchIngredient(name) {
+function matchIngredient(name) { const m = matchIngredientScored(name); return m && m.score >= 0.6 ? m.ing : null; }
+const NO_NUTRITION = /^((hot|cold|warm|boiling|ice|filtered|tap|cool|lukewarm)\s+)?water$|^ice( cubes)?$/i;
+function matchIngredientScored(name) {
   const a = tokens(name);
   if (!a.length) return null;
   let best = null;
@@ -441,10 +452,13 @@ function matchIngredient(name) {
     if (!b.size) continue;
     let m = 0;
     for (const w of a) if (b.has(w) || [...b].some(x => x.length > 3 && (x.startsWith(w) || w.startsWith(x)))) m++;
-    const score = m / a.length - 0.15 * (b.size - Math.min(m, b.size)) / b.size;
+    let score = m / a.length - 0.15 * (b.size - Math.min(m, b.size)) / b.size;
+    // the last word is usually the food itself ("red cabbage" is cabbage): it has to match
+    const head = a[a.length - 1];
+    if (a.length > 1 && !b.has(head) && ![...b].some(x => x.length > 3 && (x.startsWith(head) || head.startsWith(x)))) score *= 0.4;
     if (m && (!best || score > best.score + 1e-9 || (Math.abs(score - best.score) < 1e-9 && ing.name.length < best.ing.name.length))) best = { ing, score };
   }
-  return best && best.score >= 0.6 ? best.ing : null;
+  return best;
 }
 
 function openRecipe(r, opts = {}) {
@@ -555,7 +569,7 @@ function openRecipe(r, opts = {}) {
   const fileBox = h("div");
   const drawFiles = () => fileBox.replaceChildren(...R.attachments.map((a, i) => h("div", { class: "filerow" },
     svg(/^image\//.test(a.type) ? "image" : "file"),
-    h("button", { class: "linklike grow", onclick: () => Z.media.open(a).catch(e => toast(e.message, true)) }, a.name, h("span", { class: "muted" }, ` · ${fmtSize(a.size || 0)}`)),
+    h("button", { class: "linklike grow", onclick: () => openAttachment(a) }, a.name, h("span", { class: "muted" }, ` · ${fmtSize(a.size || 0)}`)),
     h("button", { class: "icon-btn", "aria-label": "Remove attachment", onclick: () => { R.attachments.splice(i, 1); touch(); drawFiles(); } }, svg("x")))));
   drawFiles();
 
@@ -729,10 +743,12 @@ function openScanRecipe() {
         const draft = draftFromScan(res.result || {});
         draft.attachments = attached;
         const flagged = draft.ingredients.filter(l => l._flag !== "matched").length;
+        const notVegan = Z.cookbook ? Z.cookbook.veganFlags([draft.name, ...((res.result || {}).ingredients || []).map(i => i.text || i.name || "")]) : [];
         openRecipe(draft, { isNew: true, dirty: true, addedMedia: attached, title: "Draft recipe", saveLabel: "Save recipe",
           banner: h("div", { class: "banner scan-banner" }, svg("sparkle"), h("div", { class: "small" },
             h("b", null, flagged ? `Check the ${flagged} highlighted ingredient${flagged > 1 ? "s" : ""}. ` : "Everything matched your pantry. "),
-            "Read by AI, so give the amounts and steps a quick look. The original photo is attached to the recipe.")) });
+            "Read by AI, so give the amounts and steps a quick look. The original photo is attached to the recipe.",
+            notVegan.length ? h("div", { style: { marginTop: "6px", color: "var(--tomato)" } }, h("b", null, "This may not be vegan: "), notVegan.join(", "), ". Swap those before saving.") : null)) });
       } catch (e) {
         ui.close();
         toast(e.message, true);
@@ -747,7 +763,8 @@ function draftFromScan(x) {
     const name = String(l.name || l.text).trim();
     const ing = matchIngredient(name);
     const note = [l.note].filter(Boolean).join("; ");
-    if (!ing) return { ingredient_id: null, name, amount: num(l.amount), unit: normUnit(l.unit) || "", note, _flag: "new" };
+    if (!ing) return { ingredient_id: null, name, amount: num(l.amount), unit: normUnit(l.unit) || "", note, _flag: NO_NUTRITION.test(name.trim()) ? "matched" : "new",
+      ...(NO_NUTRITION.test(name.trim()) ? { ignore: true } : {}) };
     const [amount, unit, ok] = mapUnit(num(l.amount), l.unit, ing);
     const was = !ok && (l.amount != null || l.unit) ? ` (recipe says: ${[l.amount, l.unit].filter(x => x != null && x !== "").join(" ")})` : "";
     return { ingredient_id: ing.id, amount, unit, note: note + was, _flag: ok && !l.unclear ? "matched" : "check" };
