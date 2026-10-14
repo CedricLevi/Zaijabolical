@@ -357,8 +357,17 @@
   route("GET", "/api/logs/:date", p => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new ApiError("Bad date");
     const l = doc().logs.find(x => x.id === logId(p.date));
-    const items = l ? clone(l.items) : plannedFor(p.date);
-    return { date: p.date, items, saved: !!l, ...evalItems(items) };
+    const plan = plannedFor(p.date);
+    let items;
+    if (!l) items = plan;
+    else if (l.cleared) items = clone(l.items);
+    else {
+      // follow the plan in use: drop planned meals that weren't eaten and aren't in it any more, add new ones
+      const dismissed = new Set(l.dismissed || []);
+      items = clone(l.items).filter(i => !i.planned || i.eaten || plan.some(x => x.recipe_id === i.recipe_id));
+      for (const x of plan) if (!items.some(i => i.recipe_id === x.recipe_id) && !dismissed.has(x.recipe_id)) items.push(x);
+    }
+    return { date: p.date, items, saved: !!l, dismissed: (l && l.dismissed) || [], cleared: !!(l && l.cleared), ...evalItems(items) };
   });
   route("PUT", "/api/logs/:date", (p, body) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new ApiError("Bad date");
@@ -367,8 +376,9 @@
       : { ingredient_id: String(it.ingredient_id), amount: Math.max(0, Number(it.amount) || 0), unit: it.unit || "g", eaten: it.eaten !== false }))
       .filter(it => it.recipe_id || it.ingredient_id);
     const ev = evalItems(items);
-    store().upsert("logs", { id: logId(p.date), date: p.date, items, score: ev.score, eaten: ev.eaten });
-    return { date: p.date, items, saved: true, ...ev };
+    const dismissed = [...new Set((body.dismissed || []).map(String))].slice(0, 200), cleared = !!body.cleared;
+    store().upsert("logs", { id: logId(p.date), date: p.date, items, score: ev.score, eaten: ev.eaten, dismissed, cleared });
+    return { date: p.date, items, saved: true, dismissed, cleared, ...ev };
   });
 
   // ---------------- amino acids for ingredients added before they were tracked ----------------

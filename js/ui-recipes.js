@@ -17,6 +17,7 @@ const RECIPE_ICONS = {
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
   download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 Object.assign(ICONS, RECIPE_ICONS);

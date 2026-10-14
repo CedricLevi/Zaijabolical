@@ -247,8 +247,13 @@ const todayKey = () => Z.tracker.dayKey(new Date());
 const upcomingWeekOf = () => Z.tracker.weekStart(Z.tracker.addDays(todayKey(), 1), S.data.settings.week.start_day || "Monday");
 const planIsCurrent = weekOf => !!weekOf && Z.tracker.weekStart(todayKey(), S.data.settings.week.start_day || "Monday") <= weekOf;
 const weekOfLabel = k => Z.tracker.parseDay(k).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+/* The Plan tab can show a *preview* (a fresh set of options, or a saved week you opened) without replacing the
+   plan in use. Only "Use this plan" makes it the week's plan, which Prep day and the Tracker follow.
+   S.week/S.weekOf/S.weekName = what the Plan tab shows; S.saved = the plan in use; S.draft = showing a preview. */
+const snapshotSaved = () => (S.week ? { week: S.week, weekOf: S.weekOf, name: S.weekName, choice: S.weekOptions ? S.weekChoice : null,
+  options: S.weekOptions, recommended: S.weekRecommended, anchors: [...S.anchors] } : null);
 async function loadCurrentWeek() {
-  S.week = null; S.weekName = null; S.weekOf = null; S.weekOptions = null; S.anchors = [];
+  S.week = null; S.weekName = null; S.weekOf = null; S.weekOptions = null; S.anchors = []; S.saved = null; S.draft = false;
   const cw = await api("GET", "/api/week/current");
   if (!cw || !cw.data || !planIsCurrent(cw.week_of)) return;
   S.week = cw.data; S.weekName = cw.name; S.weekOf = cw.week_of;
@@ -259,17 +264,37 @@ async function loadCurrentWeek() {
       S.anchors = wo.anchors || [];
     }
   }
+  S.saved = snapshotSaved();
 }
 async function clearPlan() {
   if (!confirm("Clear this week's plan? The prep sheet and the tracker's pre-filled meals are cleared with it.")) return;
-  S.week = null; S.weekName = null; S.weekOf = null; S.weekOptions = null; S.anchors = []; S.selDay = null; S.trk = null;
-  await persistWeek(); await persistWeekOptions();
+  S.week = null; S.weekName = null; S.weekOf = null; S.weekOptions = null; S.anchors = []; S.selDay = null; S.trk = null; S.saved = null; S.draft = false;
+  await persistWeek(true); await persistWeekOptions();
   toast("Plan cleared");
   render();
 }
-async function persistWeek() {
+/** save what the Plan tab shows as the plan in use (skipped while previewing, unless confirming) */
+async function persistWeek(force) {
+  if (S.draft && !force) return;
+  S.saved = snapshotSaved();
   try { await api("PUT", "/api/week/current", { value: S.week ? { name: S.weekName, data: S.week, week_of: S.weekOf || upcomingWeekOf(), choice: S.weekOptions ? S.weekChoice : null } : null }); }
   catch { /* best effort */ }
+}
+async function confirmPlan() {
+  S.draft = false;
+  await persistWeek(true);
+  await persistWeekOptions();
+  S.trk = null;
+  toast(`This is now the plan for the week of ${weekOfLabel(S.weekOf)}. Prep day and the Tracker use it.`);
+  render();
+}
+function backToSavedPlan() {
+  const s = S.saved;
+  S.draft = false; S.selDay = null;
+  if (!s) { S.week = null; S.weekOptions = null; render(); return; }
+  S.week = s.week; S.weekOf = s.weekOf; S.weekName = s.name; S.weekOptions = s.options; S.weekChoice = s.choice;
+  S.weekRecommended = s.recommended; S.anchors = [...s.anchors];
+  render();
 }
 async function persistWeekOptions() {
   const value = S.weekOptions ? { options: S.weekOptions, recommended: S.weekRecommended, anchors: S.anchors } : null;
@@ -336,6 +361,8 @@ function route() {
   else S.view = VIEWS.some(x => x[0] === v) ? v : "plan";
   render();
   window.scrollTo(0, 0);
+  const app = document.getElementById("app");
+  if (app) app.scrollTop = 0;   // on phones the content area scrolls, not the page
 }
 function render() {
   renderNav();
@@ -422,7 +449,7 @@ function planWeek() {
       sel("Week starts", "start_day"),
       h("div", { class: "row", style: { marginLeft: "auto" } },
         saved.length ? h("select", { style: { width: "auto" }, "aria-label": "Open a saved week",
-          onchange: async e => { if (!e.target.value) return; const p = await api("GET", `/api/plans/${e.target.value}`); S.week = p.data; S.weekName = p.name; S.weekOf = upcomingWeekOf(); S.weekOptions = null; S.selDay = null; S.trk = null; persistWeek(); persistWeekOptions(); render(); } },
+          onchange: async e => { if (!e.target.value) return; const p = await api("GET", `/api/plans/${e.target.value}`); S.week = p.data; S.weekName = p.name; S.weekOf = upcomingWeekOf(); S.weekOptions = null; S.selDay = null; S.draft = true; render(); } },
           h("option", { value: "" }, "Open saved week…"), saved.map(p => h("option", { value: p.id }, p.name))) : null,
         planBtn())),
     h("div", { style: { marginTop: "14px" } }, anchorPicker("Build around"))));
@@ -439,6 +466,16 @@ function planWeek() {
     return root;
   }
   if (S.weekOptions && S.weekOptions.length) root.append(weekOptionsPanel());
+  if (S.draft) {
+    root.append(h("div", { class: "panel confirm-plan no-print" },
+      h("div", null, h("b", null, "Preview: not in use yet. "),
+        h("span", { class: "muted" }, S.saved ? `Prep day and the Tracker still follow your current plan (week of ${weekOfLabel(S.saved.weekOf)}).`
+          : "Prep day and the Tracker start following it once you use it."),
+        h("div", { class: "muted small" }, `It will be the plan for the week of ${weekOfLabel(S.weekOf || upcomingWeekOf())}.`)),
+      h("div", { class: "row" },
+        S.saved ? h("button", { class: "btn ghost", onclick: backToSavedPlan }, "Keep current plan") : null,
+        h("button", { class: "btn primary", onclick: confirmPlan }, svg("check"), "Use this plan"))));
+  }
   const W = S.week;
   const sel_ = S.selDay;
   const rows = sel_ == null ? W.average : W.days[sel_].rows;
@@ -450,8 +487,9 @@ function planWeek() {
       h("div", { class: "muted small" }, `${cooked.length} dish${cooked.length === 1 ? "" : "es"} to cook: ${cooked.join(", ")}. Tap a day to see its numbers.`)),
     h("div", { class: "row no-print" },
       h("span", { class: "score", title: "Average coverage of all enabled targets" }, Math.round(W.score), h("small", null, "/100 coverage")),
+      S.draft ? null : h("span", { class: "tag in-use" }, svg("check"), "In use"),
       h("button", { class: "btn", onclick: saveWeek }, "Save week"),
-      h("button", { class: "btn ghost danger", onclick: clearPlan }, svg("x"), "Clear plan"),
+      S.draft ? null : h("button", { class: "btn ghost danger", onclick: clearPlan }, svg("x"), "Clear plan"),
       h("a", { class: "btn", href: "#prep" }, svg("prep"), "Prep sheet")));
   root.append(h("div", { class: "panel", style: { marginTop: "16px" } }, head, grid));
   const barsPanel = h("div", { class: "panel" },
@@ -473,7 +511,8 @@ function weekOptionsPanel() {
       onclick: () => chooseWeekOption(i) },
       h("div", { class: "wopt-h" }, h("b", null, `${o.n_dishes} dish${o.n_dishes === 1 ? "" : "es"}`),
         h("span", { class: "score" }, Math.round(o.score), h("small", null, "/100"))),
-      i === S.weekRecommended ? h("span", { class: "rec" }, "Recommended") : null,
+      h("div", { class: "row tight" }, i === S.weekRecommended ? h("span", { class: "rec" }, "Recommended") : null,
+        S.saved && S.saved.options === S.weekOptions && S.saved.choice === i ? h("span", { class: "rec in-use" }, "✓ In use") : null),
       h("ul", null, names.map(r => h("li", null, r.name, S.anchors.includes(r.id) ? h("span", { class: "anchor-mark", title: "You're building around this" }, " ★") : null))),
       fingerprint(o.average)));
   });
@@ -485,9 +524,11 @@ function weekOptionsPanel() {
 function chooseWeekOption(i) {
   S.weekChoice = i;
   S.week = JSON.parse(JSON.stringify(S.weekOptions[i]));
-  S.weekName = null; S.selDay = null; S.trk = null;
+  S.weekName = null; S.selDay = null;
   if (!S.weekOf) S.weekOf = upcomingWeekOf();
-  persistWeek();
+  // picking the option that's already in use isn't a preview
+  S.draft = !(S.saved && S.saved.options === S.weekOptions && S.saved.choice === i);
+  if (!S.draft) S.week = S.saved.week;
   render();
 }
 function dayColumn(d, i) {
@@ -524,9 +565,8 @@ async function runWeek() {
     } else {
       S.weekOptions = res.options;
       S.weekRecommended = res.recommended;
-      S.weekOf = upcomingWeekOf(); S.trk = null;
+      S.weekOf = upcomingWeekOf();
       S.busy = false;
-      persistWeekOptions();
       chooseWeekOption(res.recommended);
       return;
     }
@@ -919,16 +959,17 @@ async function openStarterWizard() {
    ================================================================ */
 function viewPrep() {
   const root = h("div");
-  const W = S.week;
+  const W = S.saved && S.saved.week;
   if (!W || !W.prep) {
     root.append(pageHead("Prep day", "Approximate prep and cook time with instructions. Shopping list included!"));
     root.append(h("div", { class: "empty" }, h("h2", null, "Plan a week first"),
-      h("p", null, "The prep sheet is built from the current week plan."),
+      h("p", null, S.draft ? "You're previewing a week on the Plan tab. Tap Use this plan there, and the prep sheet appears here."
+        : "The prep sheet is built from the week plan in use."),
       h("a", { class: "btn primary", href: "#plan" }, "Go to Plan")));
     return root;
   }
   const P = W.prep;
-  root.append(pageHead(`Prep day · week of ${weekOfLabel(S.weekOf || upcomingWeekOf())}`,
+  root.append(pageHead(`Prep day · week of ${weekOfLabel(S.saved.weekOf || upcomingWeekOf())}`,
     "Approximate prep and cook time with instructions. Shopping list included!",
     h("button", { class: "btn no-print", onclick: () => print() }, svg("print"), "Print")));
   const key = "shop-" + (S.weekName || "current");

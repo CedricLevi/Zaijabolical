@@ -6,10 +6,10 @@ async function analyse(path, after) {
   const file = new File([blob], path.split("/").pop(), { type: blob.type });
   const book = await Z.cookbook.read(file);
   const found = Z.cookbook.findRecipes(book);
-  const photos = Z.cookbook.assignPhotos(book, found.recipes, after);
+  const photos = Z.cookbook.assignPhotos(book, found.recipes, after === 'auto' ? undefined : after);
   return { title: book.title, blocks: book.blocks.length, photos: photos.length,
     recipes: found.recipes.map(r => ({ title: r.title, method: r.method, chapter: r.chapter, n_ing: r.ingredients.length, n_steps: r.steps.length,
-      yieldText: r.yieldText, photo: r.photo, cands: r.photoCandidates, draft: Z.cookbook.toDraftShape(r),
+      yieldText: r.yieldText, photo: r.photo, cands: r.photoCandidates, draft: Z.cookbook.toDraftShape(r), description: r.description,
       vegan: Z.cookbook.veganFlags([r.title, ...r.ingredients.map(i => i.text)]) })),
     ai: found.aiWork.map(w => ({ score: w.score, text: w.text.slice(0, 160) })) };
 }

@@ -86,15 +86,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .page-head p { margin: 6px 0 0; color: var(--muted); max-width: 62ch; }
 
 @media (max-width: 860px) {
-  .shell { grid-template-columns: 1fr; }
+  /* Phones: the page itself never scrolls; the content area does, and the tab bar is the last row of the
+     screen. (A "position: fixed" bar drifts on iPhone when Safari's toolbars slide in and out.) */
+  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  .shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+  .main { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;
+    padding: 18px 16px 28px; }
   .nav {
-    position: fixed; bottom: 0; top: auto; left: 0; right: 0; height: auto; z-index: 30; flex-direction: row;
+    position: static; order: 2; flex: none; height: auto; z-index: 30; flex-direction: row;
     padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--line);
     justify-content: space-around;
   }
   .brand, .nav .spacer, .nav .theme-toggle { display: none; }
   .nav a { flex-direction: column; gap: 2px; font-size: 11px; padding: 6px 8px; }
-  .main { padding: 18px 16px 110px; }
   h1 { font-size: 25px; }
 }
 
@@ -382,8 +386,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); out
 .kbd { font-family: ui-monospace, monospace; font-size: 12px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-2); }
 
 @media print {
+  html, body { height: auto !important; overflow: visible !important; }
+  .main { overflow: visible !important; }
   .nav, .no-print, .toast { display: none !important; }
-  .shell { display: block; }
+  .shell { display: block; height: auto !important; }
   .main { padding: 0; }
   body { background: #fff; }
   .panel, .batch { border-color: #ccc; break-inside: avoid; }
@@ -830,3 +836,12 @@ textarea.short { min-height: 70px; }
 .pick-item.new { color: var(--brand); font-weight: 600; justify-content: flex-start; }
 .pick-item.new svg { width: 16px; height: 16px; }
 .page-frame { flex: 1; width: 100%; border: 0; background: #fffdf7; min-height: 60vh; }
+
+.confirm-plan { margin-top: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  border-color: var(--squash); background: color-mix(in srgb, var(--squash) 8%, var(--surface)); }
+.tag.in-use { color: var(--leaf); border-color: color-mix(in srgb, var(--leaf) 45%, var(--line)); }
+.wopt .rec.in-use { color: var(--leaf); }
+
+.imp-desc { margin: 0 0 4px 8px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.imp-preview .field textarea { min-height: 64px; }
+.imp-preview select, .imp-preview input[type=number] { padding: 4px 8px; width: auto; }

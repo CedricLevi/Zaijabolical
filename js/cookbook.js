@@ -271,12 +271,42 @@
       blocks.push(...bs);
       if (i % 20 === 19) await new Promise(r => setTimeout(r));   // keep the page responsive
     }
-    // photos: big enough images that aren't the cover or a decoration
-    for (const b of blocks) if (b.kind === "img") b.photo = b.src !== coverHref && zip.size(b.src) > 30000
-      && !/\b(ornament|decor\w*|divider|icon|logo|flourish|border|rule)\b/.test(b.cls + " " + b.src.toLowerCase());
+    // photos: pictures at least 300 × 200 that aren't the cover or a decoration
+    const dims = {};
+    for (const b of blocks) if (b.kind === "img" && !(b.src in dims)) {
+      try { dims[b.src] = zip.size(b.src) > 6000 ? await imageSize(await zip.blob(b.src)) : null; } catch { dims[b.src] = null; }
+    }
+    for (const b of blocks) if (b.kind === "img") {
+      const d = dims[b.src];
+      const big = d ? d.w >= 300 && d.h >= 200 && d.w / d.h < 4 && d.h / d.w < 4 : zip.size(b.src) > 30000;
+      b.photo = b.src !== coverHref && big && !/\b(ornament|decor\w*|divider|icon|logo|flourish|border|rule|spacer)\b/.test(b.cls + " " + b.src.toLowerCase());
+    }
     return { kind: "epub", title, author, blocks, docs, zip,
       photoBlob: async src => zip.blob(src), coverHref };
   }
+  /** width/height from the first bytes of a JPEG, PNG, GIF or WebP */
+  async function imageSize(blob) {
+    const b = new Uint8Array(await blob.slice(0, 131072).arrayBuffer());
+    if (b[0] === 0x89 && b[1] === 0x50) return { w: (b[16] << 24 | b[17] << 16 | b[18] << 8 | b[19]) >>> 0, h: (b[20] << 24 | b[21] << 16 | b[22] << 8 | b[23]) >>> 0 };
+    if (b[0] === 0x47 && b[1] === 0x49) return { w: b[6] | b[7] << 8, h: b[8] | b[9] << 8 };
+    if (b[0] === 0x52 && b[8] === 0x57) {   // WebP
+      const t = String.fromCharCode(b[12], b[13], b[14], b[15]);
+      if (t === "VP8X") return { w: 1 + (b[24] | b[25] << 8 | b[26] << 16), h: 1 + (b[27] | b[28] << 8 | b[29] << 16) };
+      if (t === "VP8 ") return { w: (b[26] | b[27] << 8) & 0x3fff, h: (b[28] | b[29] << 8) & 0x3fff };
+      if (t === "VP8L") return { w: 1 + (b[21] | (b[22] & 0x3f) << 8), h: 1 + ((b[22] >> 6) | b[23] << 2 | (b[24] & 0x0f) << 10) };
+    }
+    if (b[0] === 0xff && b[1] === 0xd8) {   // JPEG: find the frame header
+      let i = 2;
+      while (i + 9 < b.length) {
+        if (b[i] !== 0xff) { i++; continue; }
+        const m = b[i + 1], len = b[i + 2] << 8 | b[i + 3];
+        if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return { w: b[i + 7] << 8 | b[i + 8], h: b[i + 5] << 8 | b[i + 6] };
+        i += 2 + len;
+      }
+    }
+    return null;
+  }
+
   /* ================================================================ PDF */
   let pdfjs = null;
   async function loadPdfjs() {
@@ -461,6 +491,9 @@
     if (ROLE.note.test(own)) return "note";
     return null;
   }
+  /** could this be a recipe title (short, not a sentence)? Long text in a heading style is a description. */
+  const isTitleText = t => { t = clean(t); return t.length > 1 && t.length <= 80 && t.split(" ").length <= 13 && !/[.!?;:,]$/.test(t) && !/[a-z]\.\s+[A-Z]/.test(t); };
+  const nonLatin = t => /[^\u0000-\u024f\u2000-\u206f\s\d]/.test(t);
   const isLabel = t => LABEL_RE.test(clean(t)) || /^(ingredients|method|directions|instructions)\b/i.test(t);
   /** a short, title-like paragraph (books that style titles with classes instead of headings) */
   const TITLE_CLS = /\b(rt|title|head|heading|name|recipe-?name|rec-?head|hd)\b/;
@@ -494,11 +527,17 @@
       const flush = () => { if (cur && cur.ingredients.length >= 2) found.push(cur); cur = null; };
       for (let k = 0; k < bs.length; k++) {
         const b = bs[k], r = roles[k];
-        const titleish = (r === "title" || (b.kind === "h" && !isLabel(b.text)) || (b.el && b.el.closest && b.el.closest("[itemprop=name]")));
+        const titleish = (r === "title" || (b.kind === "h" && !isLabel(b.text)) || (b.el && b.el.closest && b.el.closest("[itemprop=name]"))) && isTitleText(b.text);
         if (b.kind === "img") { if (cur) cur.photoSrcs.push(b.src); else (bs.pendingImgs = bs.pendingImgs || []).push(b.src); continue; }
         if (titleish && r !== "ingredient" && r !== "step") {
           if (!cur || cur.ingredients.length) { flush(); cur = { title: b.text, chapter: b.chapter, method: "tagged", ingredients: [], steps: [], blocks: [b], firstIndex: b.i, lastIndex: b.i, photoSrcs: bs.pendingImgs || [], description: "", notes: "", yieldText: "" }; bs.pendingImgs = []; }
-          else if (cur && !cur.ingredients.length) { cur.title = cur.title && cur.title.length < 40 && b.kind === "h" ? cur.title + " " + b.text : b.text; cur.blocks.push(b); }
+          else if (cur && !cur.ingredients.length) {
+            // a second title-like line before the ingredients: a subtitle (often the dish's name in another language)
+            if (!cur.title) cur.title = b.text;
+            else if ((nonLatin(b.text) || /^\(.*\)$/.test(b.text)) && !cur.title.includes(b.text)) cur.title += ` (${b.text.replace(/^\(|\)$/g, "")})`;
+            else cur.description += (cur.description ? "\n" : "") + b.text;
+            cur.blocks.push(b);
+          }
           continue;
         }
         if (!cur) {
@@ -536,7 +575,7 @@
     const titleAt = k => {
       const b = bs[k];
       if (b.kind === "img" || isLabel(b.text) || looksIngredient(b.text) || YIELD_RE.test(b.text)) return false;
-      if (b.kind === "h") return b.text.length <= 100;
+      if (b.kind === "h") return isTitleText(b.text);
       return pseudoHeading(b, bs.slice(k + 1, k + 6));
     };
     let k = 0;
@@ -545,9 +584,11 @@
       const start = k, title = bs[k];
       let j = k + 1;
       const sec = [];
-      let sawIng = 0, sawSteps = 0;
+      let sawIng = 0, sawSteps = 0, subtitle = "";
       while (j < bs.length) {
         const b = bs[j];
+        if (!sawIng && b.kind === "h" && title.kind === "h" && b.level > title.level && !sawSteps && !isLabel(b.text) && (nonLatin(b.text) || /^\(.*\)$/.test(b.text)) && isTitleText(b.text)
+          && !sec.some(x => x.kind === "h")) { subtitle = b.text; sec.push(b); j++; continue; }   // a subtitle, often the dish's name in another language
         if (!sawIng && b.kind !== "img" && b.text !== title.text && (b.kind === "h" || title.kind !== "h") && titleAt(j)) break;   // a closer title before any ingredients: the recipe starts there
         if (b.kind !== "img" && b.text === title.text) { j++; continue; }   // a caption repeating the title
         if (b.kind === "h" && !isLabel(b.text) && (sawIng || b.level && title.level && b.level <= title.level) && !(b.level > (title.level || 1) && !sawSteps)) break;
@@ -560,11 +601,12 @@
         if (sec.length > 140) break;
       }
       if (sawIng >= 2 && sawSteps >= 1) {
-        const r = { title: title.text, chapter: title.chapter, method: "structure", ingredients: [], steps: [], description: "", notes: "", yieldText: "",
+        const r = { title: subtitle ? `${title.text} (${subtitle})` : title.text, chapter: title.chapter, method: "structure", ingredients: [], steps: [], description: "", notes: "", yieldText: "",
           blocks: [title, ...sec], firstIndex: title.i, lastIndex: (sec[sec.length - 1] || title).i, photoSrcs: [] };
         let mode = "intro", group = "";
         for (const b of sec) {
-          if (b.kind === "img") { r.photoSrcs.push(b.src); continue; }
+          if (b.kind === "h" && b.text === subtitle) continue;
+          if (b.kind === "img") { const lastText = [...sec].reverse().find(x => x.kind !== "img"); if (lastText && lastText.i > b.i) r.photoSrcs.push(b.src); continue; }
           const t = b.text;
           if (YIELD_RE.test(t) || /^(serves|makes)\s/i.test(t) || (/\b(serves|makes|yield)\s*:?\s*\d/i.test(t) && t.length < 120)) { r.yieldText += (r.yieldText ? " · " : "") + t; continue; }
           if (isLabel(t) && t.length < 50) {
@@ -616,7 +658,22 @@
   }
 
   /** photos: which recipe does each picture belong to? */
+  /** does this book put each photo before its recipe? Votes from photos that sit on a recipe's own page:
+      before the title -> photos come first; after the title -> photos follow. Captions naming a recipe vote too. */
+  function guessPhotosFirst(book, recipes) {
+    let first = 0, last = 0;
+    for (const r of recipes) {
+      const t = book.blocks[r.firstIndex];
+      if (!t) continue;
+      for (const b of book.blocks.filter(x => x.kind === "img" && x.photo && (book.kind === "pdf" ? x.page === t.page : x.doc === t.doc))) {
+        if (b.i < r.firstIndex) first++; else if (b.i <= r.lastIndex + 3) last++;
+      }
+    }
+    return first > last;
+  }
   function assignPhotos(book, recipes, after) {
+    if (after == null) after = guessPhotosFirst(book, recipes);
+    book.photosFirst = after;
     const photos = book.blocks.filter(b => b.kind === "img" && b.photo);
     const seen = new Set();
     const list = [];
@@ -660,6 +717,11 @@
 
   /** turn a found recipe into the shape the recipe editor/draft uses */
   function toDraftShape(r) {
+    if (!isTitleText(r.title)) {
+      const alt = (r.blocks || []).find(b => b.kind !== "img" && isTitleText(b.text) && !isLabel(b.text) && !looksIngredient(b.text) && !YIELD_RE.test(b.text));
+      if (!r.description) r.description = r.title;
+      r.title = alt ? alt.text : r.title.split(/[.!?:;]/)[0].split(" ").slice(0, 8).join(" ");
+    }
     const y = parseYield(r.yieldText + " " + (r.description.match(/\b(serves|makes)\s+\d[^.]*/i) || [""])[0]);
     let prep = y.prep, cook = y.cook;
     if (y.total != null) {

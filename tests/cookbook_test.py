@@ -15,6 +15,9 @@ EXPECT = {
                       "times": {"Chickpea Scramble": (5, 10)}, "categories": {"Overnight Oats with Berries": "Breakfast"}},
     "plain.epub": {"titles": ["Green Tahini Sauce", "Quick Pickled Onions"], "ai": 1, "categories": {"Green Tahini Sauce": "Add-on"}},
     "microdata.epub": {"titles": ["Baked Sweet Potato Fries"], "servings": {"Baked Sweet Potato Fries": 3}},
+    "photofirst.epub": {"titles": ["Kimchi Fried Rice (김치볶음밥)", "Spicy Tofu Stew (순두부찌개)", "Cucumber Salad (오이무침)"], "auto": True,
+                        "photos": {"Kimchi Fried Rice (김치볶음밥)": "k0.jpg", "Spicy Tofu Stew (순두부찌개)": "k1.jpg", "Cucumber Salad (오이무침)": "k2.jpg"},
+                        "described": ["Kimchi Fried Rice (김치볶음밥)"]},
     "book.pdf": {"titles": ["Roasted Chickpea Wraps", "Coconut Red Lentil Curry"], "photos": {"Roasted Chickpea Wraps": "pdf:2:", "Coconut Red Lentil Curry": "pdf:4:"},
                  "servings": {"Coconut Red Lentil Curry": 6}, "categories": {"Roasted Chickpea Wraps": "Main"}},
 }
@@ -23,7 +26,7 @@ with sync_playwright() as p:
     pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto("http://127.0.0.1:8778/tests/cookbook_harness.html")
     for f, exp in EXPECT.items():
-        r = pg.evaluate(f"analyse('tests/fixtures/books/{f}', false)")
+        r = pg.evaluate(f"analyse('tests/fixtures/books/{f}', {'\'auto\'' if exp.get('auto') else 'false'})")
         got = {x["title"]: x for x in r["recipes"]}
         assert [x["title"] for x in r["recipes"]] == exp["titles"], (f, list(got))
         for t, ph in exp.get("photos", {}).items(): assert got[t]["photo"] and ph in got[t]["photo"], (f, t, got[t]["photo"])
@@ -35,6 +38,7 @@ with sync_playwright() as p:
         for t, (pr, ck) in exp.get("times", {}).items(): assert (got[t]["draft"]["prep_min"], got[t]["draft"]["cook_min"]) == (pr, ck), (f, t)
         for t, c in exp.get("categories", {}).items(): assert got[t]["draft"]["category"] == c, (f, t, got[t]["draft"]["category"])
         assert len(r["ai"]) == exp.get("ai", 0), (f, r["ai"])
+        for t in exp.get("described", []): assert "busy weeknights" in got[t]["description"], (f, t, got[t]["description"])
         print("ok", f, len(r["recipes"]), "recipes")
     # ingredient lines and yields
     cases = pg.evaluate("""() => [

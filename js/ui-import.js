@@ -59,7 +59,8 @@ function openImportReview(book, found) {
     items: [],
   };
   const existing = new Set(S.data.recipes.map(r => normName(r.name)));
-  const photos = Z.cookbook.assignPhotos(book, found.recipes, st.after);
+  const photos = Z.cookbook.assignPhotos(book, found.recipes);   // works out whether this book puts photos before or after recipes
+  st.after = !!book.photosFirst;
   const addItems = (recipes, method) => {
     for (const r of recipes) {
       if (method) r.method = method;
@@ -131,13 +132,13 @@ function openImportReview(book, found) {
         h("button", { class: "btn sm", onclick: () => { visible().forEach(x => { x.on = true; }); draw(); } }, "Tick all shown"),
         h("button", { class: "btn sm", onclick: () => { visible().forEach(x => { x.on = false; }); draw(); } }, "Untick all shown"),
         seg,
-        photos.length ? h("label", { class: "row small tight imp-after" }, "Book photos show the recipe",
+        photos.length ? h("label", { class: "row small tight imp-after" }, "In this book, photos come",
           h("select", { class: "pill", onchange: e => {
-            st.after = e.target.value === "after";
+            st.after = e.target.value === "first";
             Z.cookbook.assignPhotos(book, st.items.map(x => x.r), st.after);
             for (const x of st.items) x.photo = x.r.photo;
             draw();
-          } }, h("option", { value: "before", selected: !st.after }, "before them"), h("option", { value: "after", selected: st.after }, "after them"))) : null,
+          } }, h("option", { value: "first", selected: st.after }, "before their recipe"), h("option", { value: "last", selected: !st.after }, "after their recipe"))) : null,
         photos.length && Z.store.S.github ? h("button", { class: "btn sm", onclick: matchPhotosAi }, svg("sparkle"), "Match photos with AI") : null));
     importBtn.textContent = `Import ${c.on} recipe${c.on === 1 ? "" : "s"}`;
     importBtn.disabled = !c.on;
@@ -158,13 +159,23 @@ function openImportReview(book, found) {
           [x.r.chapter, d.servings ? `serves ${fmtAmount(d.servings)}` : null, `${d.ingredients.length} ingredients`, `${x.r.steps.length} steps`,
             (d.prep_min || d.cook_min) ? `${(d.prep_min || 0) + (d.cook_min || 0)} min` : null, d.category].filter(Boolean).join(" · "),
           h("span", { class: "tag imp-method " + x.r.method }, x.r.method === "tagged" ? "book tags" : x.r.method === "structure" ? "layout" : "AI")),
+        x.draft.description && !open ? h("div", { class: "imp-desc muted small" }, x.draft.description) : null,
         h("div", { class: "row tight" },
           x.vegan.length ? h("span", { class: "conf bad" }, "Not vegan? " + x.vegan.join(", ")) : null,
           x.dup ? h("span", { class: "conf" }, "Already in your cookbook") : null,
           ...x.checks.map(c => h("span", { class: "conf" }, c))),
         open ? h("div", { class: "imp-preview small" },
-          d.description ? h("p", { class: "muted" }, d.description.slice(0, 280) + (d.description.length > 280 ? "…" : "")) : null,
+          h("label", { class: "field" }, h("span", null, "Description"),
+            h("textarea", { class: "short", rows: 3, value: d.description || "", placeholder: "The book's intro to this recipe", oninput: e => { d.description = e.target.value; } })),
+          h("div", { class: "row tight", style: { margin: "6px 0" } },
+            h("button", { class: "btn sm", title: "Swap the name and the description", onclick: () => {
+              const t = x.title; x.title = (d.description || "").split("\n")[0].slice(0, 80) || t; d.description = t + (d.description ? "\n" + d.description.split("\n").slice(1).join("\n") : ""); draw();
+            } }, "⇅ Swap name and description"),
+            h("label", { class: "row tight small" }, "Servings", h("input", { type: "number", min: 0.5, step: 0.5, value: d.servings ?? "", style: { width: "70px" }, oninput: e => { d.servings = e.target.value === "" ? null : +e.target.value; } })),
+            h("label", { class: "row tight small" }, "Category", h("select", { onchange: e => { d.category = e.target.value; } }, CATS.map(c => h("option", { selected: d.category === c }, c))))),
+          h("b", null, "Ingredients"),
           h("ul", null, d.ingredients.map(i => h("li", null, i.text))),
+          h("b", null, "Steps"),
           h("ol", null, d.steps.slice(0, 12).map(s => h("li", null, s)))) : null),
       h("button", { class: "icon-btn" + (open ? " flip" : ""), "aria-label": open ? "Hide details" : "Show details", onclick: () => { open ? st.expanded.delete(x) : st.expanded.add(x); draw(); } }, svg("chevron")));
     return el;
@@ -175,7 +186,9 @@ function openImportReview(book, found) {
     list.replaceChildren(...(v.length ? v.map(row) : [h("p", { class: "muted" }, "Nothing here.")]));
   }
   function choosePhoto(x) {
-    const opts = [...new Set([x.photo, ...(x.r.photoCandidates || []), ...photos.filter(p => Math.abs(p.i - x.r.firstIndex) < 400).map(p => p.src)].filter(Boolean))].slice(0, 24);
+    // nearest photos first, then the rest of the book's photos
+    const near = [...photos].sort((a, b) => Math.abs(a.i - x.r.firstIndex) - Math.abs(b.i - x.r.firstIndex)).map(p => p.src);
+    const opts = [...new Set([x.photo, ...(x.r.photoCandidates || []), ...near].filter(Boolean))].slice(0, 80);
     const pick = src => { x.photo = src; m.remove(); draw(); };
     const m = h("div", { class: "scrim center", onclick: e => { if (e.target === m) m.remove(); } },
       h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": "Choose a photo" },

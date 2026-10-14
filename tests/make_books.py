@@ -154,3 +154,22 @@ body2 = ("<div itemscope='' itemtype='http://schema.org/Recipe'><p itemprop='rec
          "<li itemprop='recipeInstructions'>Toss the potatoes with cornstarch, then oil and garlic powder, and bake for 30 minutes, flipping halfway.</li></ol></div>")
 epub(os.path.join(OUT, "microdata.epub"), "Side Dishes", [("fries1.xhtml", body1), ("fries2.xhtml", body2)], {}, [("Sides", "fries1.xhtml", [])])
 print("microdata book written")
+
+# ---------------------------------------------------------------- 6. photo before each recipe, subtitle in Korean, a heading-styled headnote
+R6 = [("Kimchi Fried Rice", "김치볶음밥", "Serves 2", ["2 cups cooked rice, cold", "1 cup chopped vegan kimchi", "2 tablespoons kimchi juice", "1 tablespoon gochujang", "2 green onions, sliced"],
+       ["Fry the kimchi in a little oil for 3 minutes.", "Add the rice, kimchi juice and gochujang and stir-fry for 5 minutes until crisp in spots, then top with green onion."]),
+      ("Spicy Tofu Stew", "순두부찌개", "Serves 4", ["1 (14-ounce) package silken tofu", "3 cups vegetable broth", "1 tablespoon gochugaru", "1 onion, sliced", "2 cloves garlic, minced"],
+       ["Simmer the onion, garlic and gochugaru in the broth for 10 minutes.", "Spoon in the tofu in large pieces and simmer 5 minutes more."]),
+      ("Cucumber Salad", "오이무침", "Serves 4", ["2 cucumbers, sliced", "1 tablespoon rice vinegar", "1 teaspoon sesame oil", "1 teaspoon sugar", "1 teaspoon gochugaru"],
+       ["Salt the cucumbers for 10 minutes, then squeeze out the water.", "Toss with everything else and serve cold."])]
+docs6, imgs6, nav6 = [], {}, []
+for k, (t, ko, y, ings, steps) in enumerate(R6):
+    imgs6[f"k{k}.jpg"] = photo(60 + k)
+    head = f"<h3>My mother made this whenever the {t.lower()} cravings hit, and it is still how I cook it on busy weeknights.</h3>"
+    rec = f"<h1>{t}</h1><h2>{ko}</h2>{head}<p>{y}</p>" + "".join(f"<p>{i}</p>" for i in ings) + "".join(f"<p>{n + 1}. {st}</p>" for n, st in enumerate(steps))
+    if k < 2: docs6.append((f"k{k}.xhtml", f"<div><img src='../images/k{k}.jpg' alt=''/></div>" + rec))   # photo on the recipe's own page, before the title
+    else:
+        docs6.append((f"kp{k}.xhtml", f"<div><img src='../images/k{k}.jpg' alt=''/></div>")); docs6.append((f"k{k}.xhtml", rec))   # photo page before
+    nav6.append((t, f"k{k}.xhtml", []))
+epub(os.path.join(OUT, "photofirst.epub"), "Weeknight Korean", docs6, imgs6, [("Everyday", "k0.xhtml", nav6)])
+print("photo-first book written")

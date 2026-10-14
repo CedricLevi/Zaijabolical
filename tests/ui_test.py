@@ -169,7 +169,10 @@ with sync_playwright() as p:
     t = time.time(); pg.click(".options .btn.primary"); pg.wait_for_selector(".week-options", timeout=60000)
     print("week planned in", round(time.time() - t, 1), "s")
     pg.wait_for_timeout(400); pg.screenshot(path=f"{OUT}/05-week.png", full_page=True)
-    pg.click(".wopt >> nth=1"); pg.wait_for_timeout(2500)
+    assert pg.locator(".confirm-plan").count() == 1, "a new plan is a preview until it's used"
+    pg.click(".wopt >> nth=1"); pg.wait_for_timeout(300)
+    pg.click(".confirm-plan >> text=Use this plan"); pg.wait_for_timeout(2500)
+    assert pg.locator(".confirm-plan").count() == 0 and pg.locator(".wopt .in-use").count() == 1
     chosen = pg.inner_text(".panel-head .muted.small")
     d = remote_doc(); assert d["current_week"] and d["current_week"]["choice"] == 1 and d["week_options"] and d["current_week"]["week_of"]
     # add a dish to a day through the cookbook pop-up
@@ -341,6 +344,7 @@ with sync_playwright() as p:
 
     # tracker: today is pre-filled from the plan; check things off
     pg.goto(BASE + "#tracker"); pg.wait_for_selector(".meals", timeout=10000); pg.wait_for_timeout(300)
+    pg.click(".page-head >> text=Refresh"); pg.wait_for_selector(".meals", timeout=10000); pg.wait_for_timeout(300)
     n_items = pg.locator(".meal").count()
     if n_items == 0:   # on prep day the new plan is for next week, so today has nothing pre-filled
         for name in ("Tofu Scramble", "Tempeh Bolognese"):
@@ -420,6 +424,9 @@ with sync_playwright() as p:
     pg.reload(); pg.wait_for_selector(".page-head h1:text('Plan')"); pg.wait_for_timeout(800)
     assert pg.locator(".week").count() == 0 and pg.locator(".week-options").count() == 0, "stale plan hidden"
     pg.click(".options .btn.primary"); pg.wait_for_selector(".week", timeout=60000); pg.wait_for_timeout(500)
+    assert "current_week" not in remote_doc() or remote_doc()["current_week"]["week_of"] == "2020-01-06", "previews aren't saved"
+    pg.click(".confirm-plan >> text=Use this plan"); pg.wait_for_timeout(1500)
+    assert remote_doc()["current_week"]["week_of"] != "2020-01-06"
     pg.once("dialog", lambda dlg: dlg.accept())
     pg.click("text=Clear plan"); pg.wait_for_timeout(1500)
     assert pg.locator(".week").count() == 0 and remote_doc()["current_week"] is None

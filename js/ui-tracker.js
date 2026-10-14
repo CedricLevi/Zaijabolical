@@ -26,7 +26,7 @@ async function saveTrackerDay() {
   const st = trk();
   const date = st.date;
   try {
-    const res = await api("PUT", `/api/logs/${date}`, { items: st.day.items });
+    const res = await api("PUT", `/api/logs/${date}`, { items: st.day.items, dismissed: st.day.dismissed || [], cleared: !!st.day.cleared });
     if (st.date !== date) return;
     st.day = res;
     st.logs = await api("GET", "/api/logs");
@@ -53,7 +53,8 @@ function viewTracker() {
   const o = trackerOpts();
   const root = h("div");
   const usable = S.data.recipes.some(r => r.ingredients.length);
-  root.append(pageHead("Tracker", "Check off what she ate. Every good week puffs up the squirrel's cheeks."));
+  root.append(pageHead("Tracker", "Check off what she ate. Every good week puffs up the squirrel's cheeks.",
+    h("button", { class: "btn", title: "Get the latest plan and log from the other phone", onclick: refreshTracker }, svg("refresh"), "Refresh")));
   if (!usable) {
     root.append(h("div", { class: "empty" }, h("h2", null, "Add some recipes first"),
       h("p", null, "The tracker logs servings of your recipes (and pantry items), then scores each day against her targets."),
@@ -101,7 +102,10 @@ function dayPanel(st, o) {
         onchange: e => { it.eaten = e.target.checked; saveTrackerDay(); } }), h("span", { class: "box" }, svg("check"))),
       h("span", { class: "nm" }, name, it.planned ? h("span", { class: "muted small" }, " · planned") : null),
       qty,
-      h("button", { class: "icon-btn", "aria-label": "Remove " + name, onclick: () => { d.items.splice(i, 1); saveTrackerDay(); } }, svg("x"))));
+      h("button", { class: "icon-btn", "aria-label": "Remove " + name, onclick: () => {
+        if (it.planned && it.recipe_id) d.dismissed = [...new Set([...(d.dismissed || []), it.recipe_id])];   // don't bring it back from the plan
+        d.items.splice(i, 1); saveTrackerDay();
+      } }, svg("x"))));
   });
   if (!d.items.length) list.append(h("p", { class: "muted", style: { margin: "6px 0" } },
     S.week ? "Nothing planned for this day. Add what she ate below." : "No week plan yet, so nothing is pre-filled. Add what she ate below."));
@@ -116,7 +120,7 @@ function dayPanel(st, o) {
     anyPlannedOpen && !isFuture ? h("button", { class: "btn sm", onclick: () => { d.items.forEach(i => { i.eaten = true; }); saveTrackerDay(); } }, svg("check"), "Ate everything") : null,
     d.items.length && !isFuture ? h("button", { class: "btn sm ghost", onclick: () => {
       if (d.items.some(i => i.eaten) && !confirm("Clear everything on this day's list?")) return;
-      d.items = []; saveTrackerDay();
+      d.items = []; d.cleared = true; saveTrackerDay();
     } }, svg("x"), "Clear") : null);
   return h("div", { class: "panel p-day" }, head, list, st.adding ? addIngredientRow(st) : null, actions,
     isFuture ? h("p", { class: "muted small" }, "This day hasn't happened yet.") : null);
@@ -236,4 +240,17 @@ function trendPanel(sum, o) {
         h("small", null, Math.round(w.average)),
         h("i", { class: w.good ? "good" : w.average >= o.good_day ? "ok" : "low", style: { height: Math.max(6, w.average) + "%" } }),
         h("span", null, Z.tracker.parseDay(w.start).toLocaleDateString(undefined, { month: "numeric", day: "numeric" }))))));
+}
+
+async function refreshTracker() {
+  const btn = document.querySelector(".page-head .btn");
+  if (btn) btn.disabled = true;
+  try {
+    if (Z.store.S.github) await Z.store.pull();
+    await reload();
+    if (!S.draft) await loadCurrentWeek();
+  } catch (e) { toast(e.message, true); }
+  S.trk = null;
+  render();
+  toast(S.saved ? `Up to date: following the plan for the week of ${weekOfLabel(S.saved.weekOf)}` : "Up to date. No week plan in use.");
 }
