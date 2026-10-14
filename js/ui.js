@@ -1174,8 +1174,20 @@ function viewSettings() {
         scanStatus.textContent = r.ok ? `Scanning works (${r.engine === "claude" ? "Claude" : "Cloudflare Workers AI, free"}).` : "The scanner is reachable but no AI is switched on yet. See the README's Scanning section.";
       } catch (e) { scanStatus.textContent = e.message; }
     } }, "Check scanning"));
+  // cookbooks imported so far, with a way to remove one book's recipes (e.g. to import it again)
+  const books = {};
+  for (const r of S.data.recipes) if (r.source && r.source.book) (books[r.source.book] = books[r.source.book] || []).push(r);
+  const booksPanel = Object.keys(books).length ? h("div", { class: "panel" }, h("h2", { style: { marginBottom: "6px" } }, "Imported cookbooks"),
+    h("p", { class: "muted small" }, "To import a book again with fresh results, remove its recipes here first. Photos and attachments go with them."),
+    Object.entries(books).map(([title, list]) => h("div", { class: "builder-item", style: { marginBottom: "6px" } },
+      h("div", null, h("div", { style: { fontWeight: 500 } }, title), h("div", { class: "muted small" }, `${list.length} recipe${list.length === 1 ? "" : "s"}`)),
+      h("button", { class: "btn sm ghost danger", onclick: async () => {
+        if (!confirm(`Delete all ${list.length} recipes imported from “${title}”? This can't be undone.`)) return;
+        for (const r of list) await api("DELETE", `/api/recipes/${r.id}`);
+        await reload(); toast(`Removed ${list.length} recipes from ${title}`); render();
+      } }, svg("trash"), "Remove recipes")))) : null;
   root.append(themePanel());
-  root.append(h("div", { class: "settings-grid" }, targetsPanel, h("div", null, syncPanel(), suppPanel, structPanel, trackerPanel, scanPanel, dataPanel)));
+  root.append(h("div", { class: "settings-grid" }, targetsPanel, h("div", null, syncPanel(), suppPanel, structPanel, trackerPanel, scanPanel, booksPanel, dataPanel)));
   return root;
 }
 
