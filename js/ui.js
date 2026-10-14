@@ -382,11 +382,23 @@ function themePanel() {
     seg.append(h("button", { class: cur === id ? "on" : "", role: "radio", "aria-checked": cur === id,
       onclick: () => { setTheme(id === "auto" ? null : id); render(); } }, label));
   }
-  return h("div", { class: "panel theme-panel" },
-    h("div", null, h("h2", null, "Color theme"),
-      h("p", { class: "muted small", style: { margin: "4px 0 0" } }, "Automatic follows this device's light or dark mode. Saved per device.")),
-    seg);
+  const pos = store.get("navPos", "top");
+  const navSeg = h("div", { class: "seg", role: "radiogroup", "aria-label": "Tab bar position" });
+  for (const [id, label] of [["top", "Top"], ["bottom", "Bottom"]]) {
+    navSeg.append(h("button", { class: pos === id ? "on" : "", role: "radio", "aria-checked": pos === id,
+      onclick: () => { store.set("navPos", id); applyNavPos(id); render(); } }, label));
+  }
+  return h("div", { class: "panel theme-panel-wrap" },
+    h("div", { class: "theme-panel" },
+      h("div", null, h("h2", null, "Color theme"),
+        h("p", { class: "muted small", style: { margin: "4px 0 0" } }, "Automatic follows this device's light or dark mode. Saved per device.")),
+      seg),
+    h("div", { class: "theme-panel phone-only", style: { marginTop: "14px" } },
+      h("div", null, h("h2", null, "Tab bar"),
+        h("p", { class: "muted small", style: { margin: "4px 0 0" } }, "Where the Plan, Recipes, Tracker… tabs sit on this phone.")),
+      navSeg));
 }
+function applyNavPos(pos) { if (pos === "bottom") document.documentElement.dataset.nav = "bottom"; else delete document.documentElement.dataset.nav; }
 function route() {
   document.querySelectorAll(".scrim").forEach(x => x.remove());
   if (!Z.store.S.github && !Z.store.S.localOnly && !S.data.recipes.length && !S.data.ingredients.length) {
@@ -1342,6 +1354,7 @@ function showConnect(fromSettings) {
 /* ---------------- boot ---------------- */
 async function boot() {
   applyTheme(store.get("theme", null));
+  applyNavPos(store.get("navPos", "top"));
   const app = document.getElementById("app");
   app.append(loading("Opening your kitchen…"));
   await Z.store.init();

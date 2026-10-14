@@ -411,6 +411,15 @@ with sync_playwright() as p:
     ph.goto(link.replace("http://127.0.0.1:8765/", BASE)); ph.wait_for_selector(".week, .week-options", timeout=20000); ph.wait_for_timeout(800)
     assert "connect=" not in ph.url, "token removed from the address bar"
     print("phone scrollWidth", ph.evaluate("document.documentElement.scrollWidth"))
+    # tabs sit at the top of the phone screen, big enough to tap; Settings can move them to the bottom
+    nav = ph.locator(".nav").bounding_box(); tab = ph.locator(".nav a >> nth=0").bounding_box()
+    assert nav["y"] == 0 and tab["height"] >= 50 and tab["width"] >= 55, (nav, tab)
+    ph.goto(BASE + "#settings"); ph.wait_for_timeout(300); ph.screenshot(path=f"{OUT}/12b-phone-settings.png")
+    ph.click(".theme-panel >> text=Bottom"); ph.wait_for_timeout(300)
+    nav = ph.locator(".nav").bounding_box(); assert abs(nav["y"] + nav["height"] - 844) < 2, nav
+    ph.click(".theme-panel >> text=Top"); ph.wait_for_timeout(300)
+    assert ph.locator(".nav").bounding_box()["y"] == 0
+    ph.goto(BASE + "#plan"); ph.wait_for_selector(".week, .week-options", timeout=20000); ph.wait_for_timeout(500)
     ph.screenshot(path=f"{OUT}/12-phone.png")
     assert ph.inner_text(".panel-head .muted.small") == chosen, "phone shows the same chosen week"
     ph.goto(BASE + "#recipes"); ph.wait_for_timeout(1500); ph.screenshot(path=f"{OUT}/13-phone-recipes.png")
