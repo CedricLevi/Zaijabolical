@@ -57,6 +57,9 @@ h3 { font-size: 16px; font-weight: 500; }
 p { margin: 0 0 .6em; }
 a { color: var(--brand); }
 button, input, select, textarea { font: inherit; color: inherit; }
+/* Safari's built-in button style sets align-items: flex-start, which squeezes the contents of flex buttons
+   (recipe cards, week options) to their minimum width. Match other browsers; classes still set their own. */
+button { align-items: normal; }
 :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
@@ -514,8 +517,10 @@ img.loading-img { opacity: 0; }
 /* simple cards */
 .pcard {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; display: flex;
-  flex-direction: column; cursor: pointer; text-align: left; padding: 0; transition: border-color .15s, transform .15s;
+  flex-direction: column; align-items: stretch; justify-content: flex-start; cursor: pointer; text-align: left; padding: 0;
+  transition: border-color .15s, transform .15s;
 }
+.pcard > * { width: 100%; }
 .pcard:hover { border-color: var(--muted); }
 .pcard.inactive, .acard.inactive, tr.inactive { opacity: .6; }
 .pcard .ph { height: 150px; position: relative; }
@@ -526,7 +531,8 @@ img.loading-img { opacity: 0; }
 
 /* advanced cards */
 .cards.adv { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
-.acard { text-align: left; cursor: pointer; padding: 14px; transition: border-color .15s; font: inherit; color: inherit; }
+.acard { text-align: left; cursor: pointer; padding: 14px; transition: border-color .15s; font: inherit; color: inherit;
+  display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; }   /* top-aligned, not centred like a plain button */
 .acard:hover { border-color: var(--muted); }
 .panel.acard + .panel.acard { margin-top: 0; }
 .acard-h { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
