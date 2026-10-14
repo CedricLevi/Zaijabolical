@@ -280,14 +280,16 @@
   // week state shared between devices (stored compactly, expanded on read)
   route("PUT", "/api/week/current", (p, body) => {
     const v = body.value;
-    store().setDocField("current_week", v && v.data ? { name: v.name || null, choice: v.choice ?? null, week_of: v.week_of || null, week: compactWeek(v.data) } : null);
+    const day = x => (/^\d{4}-\d{2}-\d{2}$/.test(x || "") ? x : null);
+    store().setDocField("current_week", v && v.data ? { name: v.name || null, choice: v.choice ?? null, week_of: day(v.week_of),
+      prep_date: day(v.prep_date), week: compactWeek(v.data) } : null);
     return { ok: true };
   });
   route("GET", "/api/week/current", () => {
     const cw = doc().current_week;
     if (!cw || !cw.week) return null;
     const data = expandWeek(cw.week);
-    return data ? { name: cw.name, choice: cw.choice, week_of: cw.week_of || null, data } : null;
+    return data ? { name: cw.name, choice: cw.choice, week_of: cw.week_of || null, prep_date: cw.prep_date || null, data } : null;
   });
   route("PUT", "/api/week/options", (p, body) => {
     const v = body.value;
@@ -367,7 +369,13 @@
       items = clone(l.items).filter(i => !i.planned || i.eaten || plan.some(x => x.recipe_id === i.recipe_id));
       for (const x of plan) if (!items.some(i => i.recipe_id === x.recipe_id) && !dismissed.has(x.recipe_id)) items.push(x);
     }
-    return { date: p.date, items, saved: !!l, dismissed: (l && l.dismissed) || [], cleared: !!(l && l.cleared), ...evalItems(items) };
+    const res = { date: p.date, items, saved: !!l, dismissed: (l && l.dismissed) || [], cleared: !!(l && l.cleared), ...evalItems(items) };
+    // what the day would look like if she ate everything on the list (shown for days that haven't happened yet)
+    if (items.some(i => i.eaten === false)) {
+      const all = evalItems(items.map(i => ({ ...i, eaten: true })));
+      res.if_all = { rows: all.rows, score: all.score, amino: all.amino };
+    }
+    return res;
   });
   route("PUT", "/api/logs/:date", (p, body) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new ApiError("Bad date");

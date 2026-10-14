@@ -36,8 +36,12 @@ async function saveTrackerDay() {
 function niceDate(k, today) {
   if (k === today) return "Today";
   if (k === T_().addDays(today, -1)) return "Yesterday";
+  if (k === T_().addDays(today, 1)) return "Tomorrow";
   return T_().parseDay(k).toLocaleDateString(undefined, { weekday: "long" });
 }
+function showTrackerDay(k) { const st = trk(); st.day = null; st.adding = null; loadTrackerDay(k); }
+/** the plan in use covers this day */
+const planCovers = k => !!(S.saved && S.saved.weekOf && k >= S.saved.weekOf && k <= T_().addDays(S.saved.weekOf, 6));
 function ring(score, good) {
   const c = 2 * Math.PI * 12, p = Math.max(0, Math.min(100, score || 0));
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -54,7 +58,8 @@ function viewTracker() {
   const root = h("div");
   const usable = S.data.recipes.some(r => r.ingredients.length);
   root.append(pageHead("Tracker", "Check off what she ate. Every good week puffs up the squirrel's cheeks.",
-    h("button", { class: "btn", title: "Get the latest plan and log from the other phone", onclick: refreshTracker }, svg("refresh"), "Refresh")));
+    st.date !== o.today ? h("button", { class: "btn primary back-today", onclick: () => showTrackerDay(o.today) }, svg("back"), "Return to Today") : null,
+    h("button", { class: "btn refresh", title: "Get the latest plan and log from the other phone", onclick: refreshTracker }, svg("refresh"), "Refresh")));
   if (!usable) {
     root.append(h("div", { class: "empty" }, h("h2", null, "Add some recipes first"),
       h("p", null, "The tracker logs servings of your recipes (and pantry items), then scores each day against her targets."),
@@ -77,16 +82,19 @@ function viewTracker() {
 function dayPanel(st, o) {
   const d = st.day, today = o.today;
   const isFuture = st.date > today;
-  const go = n => { st.day = null; st.adding = null; loadTrackerDay(Z.tracker.addDays(st.date, n)); };
+  const go = n => showTrackerDay(Z.tracker.addDays(st.date, n));
+  const nice = niceDate(st.date, today);
   const head = h("div", { class: "panel-head day-nav" },
     h("div", { class: "row nowrap" },
       h("button", { class: "icon-btn", "aria-label": "Previous day", onclick: () => go(-1) }, svg("back")),
-      h("div", null, h("h2", null, niceDate(st.date, today)),
-        h("div", { class: "muted small" }, Z.tracker.parseDay(st.date).toLocaleDateString(undefined, { weekday: niceDate(st.date, today) === "Today" || niceDate(st.date, today) === "Yesterday" ? "long" : undefined, month: "long", day: "numeric" }))),
-      h("button", { class: "icon-btn", "aria-label": "Next day", disabled: st.date >= today, onclick: () => go(1) }, svg("next")),
-      st.date !== today ? h("button", { class: "btn sm ghost", onclick: () => { st.day = null; loadTrackerDay(today); } }, "Today") : null),
-    h("span", { class: "score", title: "Coverage of her targets from what was eaten (supplements included)" },
-      d.score != null ? Math.round(d.score) : "–", h("small", null, st.date === today ? "/100 so far" : "/100")));
+      h("div", null, h("h2", null, nice),
+        h("div", { class: "muted small" }, Z.tracker.parseDay(st.date).toLocaleDateString(undefined, { weekday: ["Today", "Yesterday", "Tomorrow"].includes(nice) ? "long" : undefined, month: "long", day: "numeric" }))),
+      h("button", { class: "icon-btn", "aria-label": "Next day", onclick: () => go(1) }, svg("next"))),
+    isFuture
+      ? h("span", { class: "score planned", title: "Coverage of her targets if she eats everything planned for this day" },
+        d.if_all && d.if_all.score != null ? Math.round(d.if_all.score) : "–", h("small", null, "/100 planned"))
+      : h("span", { class: "score", title: "Coverage of her targets from what was eaten (supplements included)" },
+        d.score != null ? Math.round(d.score) : "–", h("small", null, st.date === today ? "/100 so far" : "/100")));
   const list = h("div", { class: "meals" });
   const recipeName = id => (recipeById(id) || {}).name || "Deleted recipe";
   d.items.forEach((it, i) => {
@@ -98,7 +106,7 @@ function dayPanel(st, o) {
         h("button", { "aria-label": "More " + name, onclick: () => { it.servings += 0.5; saveTrackerDay(); } }, "+"))
       : h("span", { class: "muted small" }, `${fmtAmount(it.amount)} ${it.unit}`);
     list.append(h("div", { class: "meal" + (it.eaten ? " on" : "") },
-      h("label", { class: "ck" }, h("input", { type: "checkbox", checked: !!it.eaten, disabled: isFuture, "aria-label": "Ate " + name,
+      h("label", { class: "ck", title: isFuture ? "Check it off on the day" : null }, h("input", { type: "checkbox", checked: !!it.eaten, disabled: isFuture, "aria-label": "Ate " + name,
         onchange: e => { it.eaten = e.target.checked; saveTrackerDay(); } }), h("span", { class: "box" }, svg("check"))),
       h("span", { class: "nm" }, name, it.planned ? h("span", { class: "muted small" }, " · planned") : null),
       qty,
@@ -107,23 +115,31 @@ function dayPanel(st, o) {
         d.items.splice(i, 1); saveTrackerDay();
       } }, svg("x"))));
   });
-  if (!d.items.length) list.append(h("p", { class: "muted", style: { margin: "6px 0" } },
-    S.week ? "Nothing planned for this day. Add what she ate below." : "No week plan yet, so nothing is pre-filled. Add what she ate below."));
+  if (!d.items.length) {
+    const upcoming = S.saved && S.saved.weekOf > st.date && !planCovers(st.date) ? S.saved.weekOf : null;
+    list.append(h("p", { class: "muted", style: { margin: "6px 0" } },
+      d.cleared ? (isFuture ? "Cleared. Plan a dish below if you like." : "Cleared. Add what she ate below.")
+        : planCovers(st.date) ? (isFuture ? "Nothing planned for this day." : "Nothing planned for this day. Add what she ate below.")
+          : upcoming ? `The plan in use starts ${dayLabel(upcoming)}. ` : S.saved ? "The plan in use doesn't cover this day. "
+            : "No week plan in use, so nothing is pre-filled. ",
+      upcoming ? h("button", { class: "btn sm", onclick: () => showTrackerDay(upcoming) }, "Show that day", svg("next")) : null));
+  }
   const anyPlannedOpen = d.items.some(i => !i.eaten);
   const actions = h("div", { class: "row trk-add" },
-    h("button", { class: "btn sm", disabled: isFuture, onclick: () => pickRecipe({ title: "What did she eat?", onPick: r => {
+    h("button", { class: "btn sm", onclick: () => pickRecipe({ title: isFuture ? `Plan a dish for ${nice}` : "What did she eat?", onPick: r => {
       const ex = d.items.find(x => x.recipe_id === r.id);
-      if (ex) { ex.servings += ex.eaten ? 1 : 0; ex.eaten = true; } else d.items.push({ recipe_id: r.id, servings: 1, eaten: true });
+      if (isFuture) { if (ex) ex.servings += 1; else d.items.push({ recipe_id: r.id, servings: 1, eaten: false }); }   // to check off on the day
+      else if (ex) { ex.servings += ex.eaten ? 1 : 0; ex.eaten = true; } else d.items.push({ recipe_id: r.id, servings: 1, eaten: true });
       saveTrackerDay();
-    } }) }, svg("plus"), "Add a dish"),
-    h("button", { class: "btn sm", disabled: isFuture, onclick: () => { st.adding = st.adding ? null : { ingredient_id: "", amount: 1, unit: "" }; render(); } }, svg("plus"), "Pantry item"),
+    } }) }, svg("plus"), isFuture ? "Plan a dish" : "Add a dish"),
+    h("button", { class: "btn sm", onclick: () => { st.adding = st.adding ? null : { ingredient_id: "", amount: 1, unit: "" }; render(); } }, svg("plus"), "Pantry item"),
     anyPlannedOpen && !isFuture ? h("button", { class: "btn sm", onclick: () => { d.items.forEach(i => { i.eaten = true; }); saveTrackerDay(); } }, svg("check"), "Ate everything") : null,
-    d.items.length && !isFuture ? h("button", { class: "btn sm ghost", onclick: () => {
+    d.items.length ? h("button", { class: "btn sm ghost", onclick: () => {
       if (d.items.some(i => i.eaten) && !confirm("Clear everything on this day's list?")) return;
       d.items = []; d.cleared = true; saveTrackerDay();
     } }, svg("x"), "Clear") : null);
   return h("div", { class: "panel p-day" }, head, list, st.adding ? addIngredientRow(st) : null, actions,
-    isFuture ? h("p", { class: "muted small" }, "This day hasn't happened yet.") : null);
+    isFuture ? h("p", { class: "muted small future-note" }, "This day hasn't happened yet. These are the planned meals; check them off on the day.") : null);
 }
 function addIngredientRow(st) {
   const a = st.adding;
@@ -137,7 +153,7 @@ function addIngredientRow(st) {
     h("input", { type: "number", min: 0, step: "any", value: a.amount, "aria-label": "Amount", oninput: e => { a.amount = +e.target.value; } }),
     h("select", { "aria-label": "Unit", onchange: e => { a.unit = e.target.value; } }, units.map(u => h("option", { selected: u === a.unit }, u))),
     h("button", { class: "btn sm primary", disabled: !ing, onclick: () => {
-      st.day.items.push({ ingredient_id: a.ingredient_id, amount: a.amount || 1, unit: a.unit, eaten: true });
+      st.day.items.push({ ingredient_id: a.ingredient_id, amount: a.amount || 1, unit: a.unit, eaten: st.date <= trackerOpts().today });
       st.adding = null; saveTrackerDay();
     } }, "Add"));
 }
@@ -150,23 +166,37 @@ function weekPanel(st, sum, o) {
   for (let i = 0; i < 7; i++) {
     const k = Z.tracker.addDays(start, i);
     const sc = w.days[k];
-    strip.append(h("button", { class: "dayc" + (k === st.date ? " sel" : "") + (k === o.today ? " today" : "") + (k > o.today ? " future" : ""),
-      disabled: k > o.today, "aria-label": `${Z.tracker.weekdayName(k)}${sc != null ? `, score ${Math.round(sc)}` : ", nothing logged"}`,
-      onclick: () => { st.day = null; st.adding = null; loadTrackerDay(k); } },
+    const fut = k > o.today, planned = planCovers(k);
+    strip.append(h("button", { class: "dayc" + (k === st.date ? " sel" : "") + (k === o.today ? " today" : "") + (fut ? " future" : "") + (planned ? " planned" : ""),
+      "aria-label": `${Z.tracker.weekdayName(k)}${sc != null ? `, score ${Math.round(sc)}` : fut ? (planned ? ", planned" : "") : ", nothing logged"}`,
+      onclick: () => showTrackerDay(k) },
       h("span", null, Z.tracker.weekdayName(k).slice(0, 3)), ring(sc, o.good_day), h("b", null, sc != null ? Math.round(sc) : "–")));
   }
+  const thisStart = Z.tracker.weekStart(o.today, o.startDay);
+  const weeksAway = Math.round(Z.tracker.daysBetween(thisStart, start) / 7);
+  const title = weeksAway === 0 ? "This week" : weeksAway === 1 ? "Next week" : weeksAway === -1 ? "Last week"
+    : `Week of ${Z.tracker.parseDay(start).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  // move a week at a time, keeping the same weekday (but land on today when coming back to this week)
+  const jump = n => { const k = Z.tracker.addDays(st.date, 7 * n); showTrackerDay(Z.tracker.weekStart(k, o.startDay) === thisStart ? o.today : k); };
   return h("div", { class: "panel p-week" },
-    h("div", { class: "panel-head" }, h("h2", null, start === Z.tracker.weekStart(o.today, o.startDay) ? "This week" : `Week of ${Z.tracker.parseDay(start).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`),
-      h("span", { class: "muted small" }, `${w.goodDays} of ${o.good_days_per_week} good days`)),
+    h("div", { class: "panel-head" },
+      h("div", { class: "row nowrap" },
+        h("button", { class: "icon-btn", "aria-label": "Previous week", onclick: () => jump(-1) }, svg("back")),
+        h("h2", null, title),
+        h("button", { class: "icon-btn", "aria-label": "Next week", onclick: () => jump(1) }, svg("next"))),
+      h("span", { class: "muted small" }, weeksAway > 0 ? (S.saved && S.saved.weekOf <= Z.tracker.addDays(start, 6) && Z.tracker.addDays(S.saved.weekOf, 6) >= start ? "Planned" : "Not planned yet") : `${w.goodDays} of ${o.good_days_per_week} good days`)),
     strip, h("p", { class: "muted small", style: { margin: "8px 0 0" } }, `Each day's score is its coverage of her targets from what was eaten. A good day is ${o.good_day}+.`));
 }
 
 /* ---------------- nutrients for the selected day ---------------- */
 function dayNutrients(st) {
-  const d = st.day;
+  const future = st.date > trackerOpts().today;
+  const d = future ? st.day.if_all : st.day;
   const panel = h("div", { class: "panel p-nut" }, h("div", { class: "panel-head" },
-    h("h2", null, st.date === trackerOpts().today ? "Today so far" : "That day"), h("span", { class: "muted small" }, "eaten vs. her targets")));
-  if (!d.eaten) { panel.append(h("p", { class: "muted" }, "Check off what she ate to see her numbers.")); return panel; }
+    h("h2", null, future ? "Planned" : st.date === trackerOpts().today ? "Today so far" : "That day"),
+    h("span", { class: "muted small" }, future ? "if she eats everything listed" : "eaten vs. her targets")));
+  if (future && !d) { panel.append(h("p", { class: "muted" }, "Nothing planned for this day yet.")); return panel; }
+  if (!future && !d.eaten) { panel.append(h("p", { class: "muted" }, "Check off what she ate to see her numbers.")); return panel; }
   panel.append(macroLine(d.rows), h("div", { style: { margin: "10px 0 14px" } }, fingerprint(d.rows, true)), bars(d.rows));
   const am = d.amino;
   if (am && am.has_data) {
@@ -243,7 +273,7 @@ function trendPanel(sum, o) {
 }
 
 async function refreshTracker() {
-  const btn = document.querySelector(".page-head .btn");
+  const btn = document.querySelector(".page-head .btn.refresh");
   if (btn) btn.disabled = true;
   try {
     if (Z.store.S.github) await Z.store.pull();
@@ -252,5 +282,5 @@ async function refreshTracker() {
   } catch (e) { toast(e.message, true); }
   S.trk = null;
   render();
-  toast(S.saved ? `Up to date: following the plan for the week of ${weekOfLabel(S.saved.weekOf)}` : "Up to date. No week plan in use.");
+  toast(S.saved ? `Up to date: following the plan for meals ${mealsRange(S.saved.weekOf)}` : "Up to date. No week plan in use.");
 }

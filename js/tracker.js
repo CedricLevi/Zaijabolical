@@ -10,6 +10,8 @@
   function parseDay(k) { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d, 12); }
   function addDays(k, n) { const d = parseDay(k); d.setDate(d.getDate() + n); return dayKey(d); }
   function weekdayName(k) { return DAY_NAMES[parseDay(k).getDay()]; }
+  /** whole days from a to b (b - a) */
+  function daysBetween(a, b) { return Math.round((parseDay(b) - parseDay(a)) / 864e5); }
 
   /** First day of the week containing `k`, for weeks starting on `startDay` ("Monday"…) */
   function weekStart(k, startDay) {
@@ -63,5 +65,5 @@
     };
   }
 
-  Z.tracker = { DAY_NAMES, dayKey, parseDay, addDays, weekdayName, weekStart, weekMonth, monthLabel, summarize, DEFAULTS };
+  Z.tracker = { DAY_NAMES, dayKey, parseDay, addDays, daysBetween, weekdayName, weekStart, weekMonth, monthLabel, summarize, DEFAULTS };
 })(globalThis.Z = globalThis.Z || {});

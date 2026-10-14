@@ -171,10 +171,29 @@ with sync_playwright() as p:
     pg.wait_for_timeout(400); pg.screenshot(path=f"{OUT}/05-week.png", full_page=True)
     assert pg.locator(".confirm-plan").count() == 1, "a new plan is a preview until it's used"
     pg.click(".wopt >> nth=1"); pg.wait_for_timeout(300)
+    # pick the dates: default prep is the next prep day (Sunday) with meals from the day after
+    today = pg.evaluate("Z.tracker.dayKey(new Date())")
+    tomorrow = pg.evaluate("Z.tracker.addDays(Z.tracker.dayKey(new Date()), 1)")
+    dates = pg.locator(".plan-dates input[type=date]")
+    assert dates.count() == 2
+    prep0, start0 = dates.nth(0).input_value(), dates.nth(1).input_value()
+    assert pg.evaluate(f"Z.tracker.weekdayName('{prep0}')") == "Sunday" and pg.evaluate(f"Z.tracker.daysBetween('{prep0}', '{start0}')") == 1, (prep0, start0)
+    dates.nth(0).fill(today); pg.wait_for_timeout(600)
+    assert dates.nth(1).input_value() == tomorrow, "first day of meals follows the prep day"
+    assert pg.inner_text(".day >> nth=0 >> .day-head b") == pg.evaluate(f"Z.tracker.weekdayName('{tomorrow}')")[:3], "days relabelled"
+    dates.nth(1).fill(today); pg.wait_for_timeout(600)   # prep and eat from today
+    assert pg.inner_text(".day >> nth=0 >> .day-head b") == pg.evaluate(f"Z.tracker.weekdayName('{today}')")[:3]
+    pg.screenshot(path=f"{OUT}/05a-plan-dates.png")
     pg.click(".confirm-plan >> text=Use this plan"); pg.wait_for_timeout(2500)
     assert pg.locator(".confirm-plan").count() == 0 and pg.locator(".wopt .in-use").count() == 1
     chosen = pg.inner_text(".panel-head .muted.small")
-    d = remote_doc(); assert d["current_week"] and d["current_week"]["choice"] == 1 and d["week_options"] and d["current_week"]["week_of"]
+    d = remote_doc(); assert d["current_week"] and d["current_week"]["choice"] == 1 and d["week_options"]
+    assert d["current_week"]["week_of"] == today and d["current_week"]["prep_date"] == today, d["current_week"]
+    assert d["current_week"]["week"]["days"][0]["day"] == pg.evaluate(f"Z.tracker.weekdayName('{today}')")
+    # Change dates reopens the plan as a preview; Keep current plan leaves it alone
+    pg.click(".panel-head >> text=Change dates"); pg.wait_for_selector(".confirm-plan .plan-dates")
+    pg.click(".confirm-plan >> text=Keep current plan"); pg.wait_for_timeout(300)
+    assert pg.locator(".confirm-plan").count() == 0 and remote_doc()["current_week"]["week_of"] == today
     # add a dish to a day through the cookbook pop-up
     pg.click(".day >> nth=0 >> .add-dish"); pg.wait_for_selector(".modal.wide .pcard"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/05b-picker.png")
     before = pg.locator(".day >> nth=0 >> .dish").count()
@@ -345,6 +364,16 @@ with sync_playwright() as p:
     # tracker: today is pre-filled from the plan; check things off
     pg.goto(BASE + "#tracker"); pg.wait_for_selector(".meals", timeout=10000); pg.wait_for_timeout(300)
     pg.click(".page-head >> text=Refresh"); pg.wait_for_selector(".meals", timeout=10000); pg.wait_for_timeout(300)
+    assert pg.locator("text=Return to Today").count() == 0
+    # look ahead: tomorrow shows its planned meals, view-only, with a planned score
+    pg.click("[aria-label='Next day']"); pg.wait_for_selector(".day-nav h2:text('Tomorrow')"); pg.wait_for_timeout(300)
+    assert pg.locator(".meal").count() >= 1 and pg.locator(".meal input[type=checkbox]:disabled").count() == pg.locator(".meal").count()
+    assert "planned" in pg.inner_text(".day-nav .score") and pg.locator(".p-nut h2:text('Planned')").count() == 1
+    pg.screenshot(path=f"{OUT}/16b-tracker-tomorrow.png", full_page=True)
+    pg.click("[aria-label='Next week']"); pg.wait_for_selector(".p-week h2:text('Next week')"); pg.wait_for_timeout(300)
+    pg.click("text=Return to Today"); pg.wait_for_selector(".day-nav h2:text('Today')"); pg.wait_for_timeout(300)
+    assert pg.locator("text=Return to Today").count() == 0 and pg.locator(".p-week h2:text('This week')").count() == 1
+    assert not any(l["date"] > today for l in remote_doc().get("logs", [])), "looking ahead saves nothing"
     n_items = pg.locator(".meal").count()
     if n_items == 0:   # on prep day the new plan is for next week, so today has nothing pre-filled
         for name in ("Tofu Scramble", "Tempeh Bolognese"):
@@ -401,6 +430,10 @@ with sync_playwright() as p:
     print("phone scrollWidth (tracker)", ph.evaluate("document.documentElement.scrollWidth"))
     assert ph.evaluate("document.documentElement.scrollWidth") <= 390, "no sideways scrolling on the phone"
     ph.screenshot(path=f"{OUT}/13c-phone-tracker.png", full_page=True)
+    ph.click("[aria-label='Next day']"); ph.wait_for_selector("text=Return to Today"); ph.wait_for_timeout(400)
+    assert ph.evaluate("document.documentElement.scrollWidth") <= 390, "look-ahead fits the phone"
+    ph.screenshot(path=f"{OUT}/13g-phone-tomorrow.png")
+    ph.click("text=Return to Today"); ph.wait_for_selector(".day-nav h2:text('Today')")
 
     # concurrent edit merge: phone renames a recipe while desktop adds a supplement
     ph.goto(BASE + "#settings"); ph.wait_for_timeout(300)
