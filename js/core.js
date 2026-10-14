@@ -113,6 +113,60 @@
     return { per_serving: per, missing, total_grams: totalG, grams_per_serving: totalG / servings, problems };
   }
 
+  /* ---------------- homemade pantry items (a recipe used as an ingredient, e.g. a broth or sauce) ---------------- */
+  const VOLUME_ML = { ml: 1, l: 1000, liter: 1000, litre: 1000, tsp: 4.93, teaspoon: 4.93, tbsp: 14.79, tablespoon: 14.79,
+    cup: 240, "fl oz": 29.57, fl_oz: 29.57, floz: 29.57, pint: 473, quart: 946, qt: 946, gallon: 3785 };
+  /** grams for a line that isn't linked to the pantry (water, ice…): weights as they are, volumes as water */
+  function looseGrams(amount, unit) {
+    amount = Number(amount) || 0;
+    const u = String(unit || "").trim().toLowerCase().replace(/\.$/, "");
+    if (WEIGHT_UNITS[u]) return amount * WEIGHT_UNITS[u];
+    const v = VOLUME_ML[u] ?? VOLUME_ML[u.replace(/e?s$/, "")];
+    return v ? amount * v : 0;
+  }
+  /** a first guess at what the whole batch weighs: everything that goes in, water included (before cooking) */
+  function recipeYieldGuess(recipe, ingById) {
+    let g = 0;
+    for (const l of recipe.ingredients || []) {
+      const ing = ingById[l.ingredient_id];
+      g += ing ? toGrams(l.amount, l.unit, ing) : looseGrams(l.amount, l.unit);
+    }
+    return Math.round(g);
+  }
+  /**
+   * Nutrients per 100 g of a recipe used as a pantry item, for a batch weighing yieldG.
+   * A nutrient is left unknown when less than 3/4 of the linked ingredients (by weight) have a value for it.
+   */
+  function recipeAsIngredient(recipe, ingById, yieldG) {
+    const tot = {}, known = {};
+    let linkedG = 0;
+    for (const l of recipe.ingredients || []) {
+      const ing = ingById[l.ingredient_id];
+      if (!ing) continue;
+      const g = toGrams(l.amount, l.unit, ing);
+      if (!(g > 0)) continue;
+      linkedG += g;
+      for (const [k, v] of Object.entries(ing.nutrients || {})) {
+        if (v == null || v === "" || !isFinite(Number(v))) continue;
+        tot[k] = (tot[k] || 0) + Number(v) * g / 100;
+        known[k] = (known[k] || 0) + g;
+      }
+    }
+    const y = Number(yieldG) > 0 ? Number(yieldG) : recipeYieldGuess(recipe, ingById);
+    const nutrients = {};
+    if (y > 0 && linkedG > 0) {
+      for (const k of Object.keys(tot)) {
+        if (known[k] / linkedG < 0.75 && !ASSUME_ZERO_IF_MISSING.has(k)) continue;
+        nutrients[k] = +(tot[k] / y * 100).toPrecision(5);
+      }
+    }
+    const servings = Number(recipe.servings) || 1;
+    // spoon and cup measures assume it's about as dense as water (true enough for broths and most sauces)
+    const portions = y > 0 ? [{ label: "serving", grams: +(y / servings).toFixed(1), auto: true }, { label: "batch", grams: Math.round(y), auto: true },
+      { label: "cup", grams: 240, auto: true }, { label: "tbsp", grams: 15, auto: true }, { label: "tsp", grams: 5, auto: true }] : [];
+    return { nutrients, portions, yield_g: y, linked_g: linkedG };
+  }
+
   /** Amino acids from a list of [ingredient, grams]. Returns per-acid grams plus a protein-quality %
       (mg of the acid per g protein vs. the WHO reference). Ingredients without amino data are left out of the
       quality figure, and `coverage` says what share of the protein had data. */
@@ -274,8 +328,9 @@
   }
 
   // ---------------- prep sheet ----------------
+  const HOMEMADE_AISLE = "Homemade: make these first";
   const AISLE_ORDER = ["Produce", "Tofu & Plant Protein", "Beans & Legumes", "Grains & Pasta", "Nuts & Seeds",
-    "Dairy-Free & Fridge", "Frozen", "Pantry & Spices", "Other"];
+    "Dairy-Free & Fridge", "Frozen", "Pantry & Spices", "Homemade", "Other"];
   const FRAC = { 0.25: "¼", 0.5: "½", 0.75: "¾" };
 
   function nicePortion(grams, ing) {
@@ -347,11 +402,11 @@
     batches.sort((a, b) => b.cook_min - a.cook_min);
     const grouped = {};
     for (const s of shopping.values()) {
-      const a = s.ing.aisle || "Other";
+      const a = s.ing.from_recipe ? HOMEMADE_AISLE : (s.ing.aisle || "Other");   // homemade items are made, not bought
       (grouped[a] = grouped[a] || []).push({ name: s.ing.name, grams: Math.round(s.grams), pretty: s.text ? (s.text.join(" + ") || "") : fmtG(s.grams),
         portion: s.text ? null : nicePortion(s.grams, s.ing), recipes: [...s.recipes].sort(), verify: !!s.ing.verify });
     }
-    const idx = a => { const i = AISLE_ORDER.indexOf(a); return i < 0 ? 99 : i; };
+    const idx = a => { if (a === HOMEMADE_AISLE) return -1; const i = AISLE_ORDER.indexOf(a); return i < 0 ? 99 : i; };
     const aisles = Object.keys(grouped).sort((a, b) => idx(a) - idx(b))
       .map(a => ({ aisle: a, items: grouped[a].sort((x, y) => x.name.toLowerCase().localeCompare(y.name.toLowerCase())) }));
     const order = Object.fromEntries(days.map((d, i) => [d.day, i]));
@@ -392,6 +447,6 @@
     KEYS, BY_KEY, GROUPS, AISLES: AISLE_ORDER, AMINO, AA_KEYS,
     parseUsdaNutrients, defaultTargets, toGrams, recipeNutrition, supplementTotals, combine,
     evaluate, averageRows, score, nutrientMeta, recommendations, buildPrep, buildSchedule, statusFor,
-    aminoFromGrams, recipeAmino,
+    aminoFromGrams, recipeAmino, recipeYieldGuess, recipeAsIngredient, looseGrams,
   });
 })(globalThis.Z = globalThis.Z || {});

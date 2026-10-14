@@ -81,6 +81,7 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
+  pot: '<path d="M4 10h16v6a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z"/><path d="M2 10h20M9 6c0-1.5 1-1.5 1-3M14 6c0-1.5 1-1.5 1-3"/>',
   tracker: Z.art.NAV_SQUIRREL,
 };
 
@@ -762,6 +763,7 @@ function viewPantry() {
   const toLink = unlinkedCount();
   root.append(pageHead("Pantry", "Ingredients and their nutrients per 100 g. Pull them from the USDA database or enter them from a package label.",
     toLink ? h("a", { class: "btn", href: "#link" }, svg("chain"), `Link ingredients (${toLink})`) : null,
+    h("button", { class: "btn", onclick: () => chooseHomemade() }, svg("pot"), "From a recipe"),
     h("button", { class: "btn primary", onclick: () => openAddIngredient("") }, svg("plus"), "Add ingredient")));
   if (!s.usda_api_key) root.append(apiKeyBanner());
   if (S.data.seeded < S.data.starter_count) {
@@ -774,11 +776,19 @@ function viewPantry() {
           S.data.seeded ? "Finish importing starters" : "Import starters"))));
   }
   const q = S.pantryQ.toLowerCase();
-  const list = S.data.ingredients.filter(i => !q || i.name.toLowerCase().includes(q) || (i.usda_description || "").toLowerCase().includes(q));
+  const kind = S.pantryKind || "all";
+  const nHome = S.data.ingredients.filter(i => i.from_recipe).length;
+  const list = S.data.ingredients.filter(i => (!q || i.name.toLowerCase().includes(q) || (i.usda_description || "").toLowerCase().includes(q)) &&
+    (kind === "all" || (kind === "home") === !!i.from_recipe))
+    .sort((a, b) => !!b.from_recipe - !!a.from_recipe);   // homemade first (otherwise A–Z, as loaded)
   const usage = {};
   for (const r of S.data.recipes) for (const l of r.ingredients) usage[l.ingredient_id] = (usage[l.ingredient_id] || 0) + 1;
+  const kinds = h("div", { class: "seg", role: "tablist", "aria-label": "Show" });
+  for (const [id, label] of [["all", "All"], ["store", "Store-bought"], ["home", `Homemade${nHome ? ` (${nHome})` : ""}`]]) {
+    kinds.append(h("button", { class: kind === id ? "on" : "", role: "tab", "aria-selected": kind === id, onclick: () => { S.pantryKind = id; render(); } }, label));
+  }
   root.append(h("div", { class: "toolbar" }, h("input", { type: "search", placeholder: "Search pantry", value: S.pantryQ, "aria-label": "Search pantry",
-    oninput: debounce(e => { S.pantryQ = e.target.value; render(); document.querySelector(".toolbar input").focus(); }, 250) })));
+    oninput: debounce(e => { S.pantryQ = e.target.value; render(); document.querySelector(".toolbar input").focus(); }, 250) }), kinds));
   if (!S.data.ingredients.length) {
     root.append(h("div", { class: "empty" }, h("h2", null, "The pantry is empty"),
       h("p", null, "Import the starters above, or add ingredients one by one from USDA or a nutrition label.")));
@@ -786,15 +796,85 @@ function viewPantry() {
   }
   const tbl = h("table", { class: "table" },
     h("thead", null, h("tr", null, ["Ingredient", "Aisle", "Source", "kcal", "Protein", "Used in"].map(t => h("th", null, t)))),
-    h("tbody", null, list.map(i => h("tr", { class: "click", onclick: () => openIngredient(i) },
-      h("td", null, h("div", { style: { fontWeight: 500 } }, i.name), i.usda_description ? h("div", { class: "muted small" }, i.usda_description) : null),
+    h("tbody", null, list.map(i => h("tr", { class: "click" + (i.from_recipe ? " homemade" : ""), onclick: () => openIngredient(i) },
+      h("td", null, h("div", { class: "row tight nowrap", style: { fontWeight: 500 } }, i.from_recipe ? svg("pot", "home-ic") : null, i.name),
+        i.from_recipe ? h("div", { class: "muted small" }, homemadeLine(i)) : i.usda_description ? h("div", { class: "muted small" }, i.usda_description) : null),
       h("td", { class: "muted" }, i.aisle),
-      h("td", null, h("span", { class: "tag" }, i.source === "usda" ? "USDA" : "Label"),
+      h("td", null, i.from_recipe ? h("span", { class: "tag homemade" }, "Homemade") : h("span", { class: "tag" }, i.source === "usda" ? "USDA" : "Label"),
         i.verify ? h("span", { class: "tag warn", title: "Brands vary (fortification especially). Compare with your package label." }, "check label") : null),
       h("td", null, fmt(i.nutrients.kcal)), h("td", null, fmt(i.nutrients.protein, "g")),
       h("td", { class: "muted" }, usage[i.id] ? `${usage[i.id]} recipe${usage[i.id] > 1 ? "s" : ""}` : "–")))));
+  if (kind === "home" && !list.length) {
+    root.append(h("div", { class: "empty" }, h("h2", null, "No homemade items yet"),
+      h("p", null, "Turn a recipe like a broth, sauce or dressing into a pantry item, then use it in other recipes or log it in the Tracker. Its nutrients come from the recipe."),
+      h("button", { class: "btn primary", onclick: () => chooseHomemade() }, svg("pot"), "Choose a recipe")));
+    return root;
+  }
   root.append(h("div", { class: "panel table-wrap" }, tbl));
   return root;
+}
+
+/* ---------------- homemade pantry items: a recipe (broth, sauce…) used as an ingredient ---------------- */
+function homemadeLine(i) {
+  const r = recipeById(i.from_recipe);
+  const serving = (i.portions || []).find(p => p.label === "serving");
+  if (!r) return "Its recipe was deleted, so these are the last nutrients it had.";
+  return `From the recipe “${r.name}” · batch ≈ ${fmt(i.yield_g)} g${serving ? ` · serving ≈ ${fmt(serving.grams)} g` : ""}`;
+}
+function chooseHomemade(onDone) {
+  pickRecipe({ title: "Which recipe goes in the pantry?", onPick: r => openHomemade(r, onDone) });
+}
+/** make a recipe into a pantry item, or change the one made from it */
+function openHomemade(r, onDone) {
+  const ingL = Object.fromEntries(S.data.ingredients.map(i => [i.id, i]));
+  const ex = S.data.ingredients.find(i => i.from_recipe === r.id);
+  const guess = Z.recipeYieldGuess(r, ingL);
+  const st = { name: ex ? ex.name : r.name, yield_g: (ex && ex.yield_g) || guess || "", aisle: ex ? ex.aisle : "Homemade" };
+  const preview = h("div", { class: "home-preview" });
+  const drawPreview = () => {
+    const d = Z.recipeAsIngredient(r, ingL, st.yield_g);
+    const per = g => `${fmt((d.nutrients.kcal || 0) * g / 100)} kcal · ${fmt((d.nutrients.protein || 0) * g / 100, "g")} protein`;
+    const sv = d.portions.find(p => p.label === "serving");
+    preview.replaceChildren(!(st.yield_g > 0) ? h("span", { class: "muted" }, "Enter the batch weight to see its nutrients.")
+      : h("div", null, h("div", null, h("b", null, "1 cup "), h("span", { class: "muted" }, "(≈240 g): "), per(240)),
+        sv ? h("div", null, h("b", null, "1 serving "), h("span", { class: "muted" }, `(≈${fmt(sv.grams)} g): `), per(sv.grams)) : null,
+        h("div", null, h("b", null, "100 g: "), per(100))));
+  };
+  drawPreview();
+  const fld = (label, el, hint) => h("label", { class: "field" }, h("span", null, label), el, hint || null);
+  const close = () => scrim.remove();
+  const save = h("button", { class: "btn primary", onclick: async () => {
+    save.disabled = true;
+    try {
+      const ing = await api("POST", "/api/ingredients/from-recipe", { recipe_id: r.id, name: st.name, yield_g: st.yield_g, aisle: st.aisle });
+      await reload(); close(); render();
+      toast(ex ? `${ing.name} updated` : `${ing.name} is in the pantry`);
+      if (onDone) onDone(ing);
+    } catch (e) { toast(e.message, true); save.disabled = false; }
+  } }, svg("check"), ex ? "Save" : "Add to pantry");
+  const scrim = h("div", { class: "scrim center", onclick: e => { if (e.target === scrim) close(); } },
+    h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": "Use a recipe as a pantry item" },
+      h("div", { class: "drawer-head" }, h("h2", null, ex ? "Homemade pantry item" : "Add to the pantry"), h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, svg("x"))),
+      h("div", { class: "drawer-body home-form" },
+        h("p", { class: "muted", style: { marginTop: 0 } }, `“${r.name}” becomes a pantry item you can use in other recipes (like a broth in a soup) and log in the Tracker. Its nutrients come from the recipe and update when you edit it.`),
+        fld("Name in the pantry", h("input", { type: "text", value: st.name, oninput: e => { st.name = e.target.value; } })),
+        fld("The whole batch weighs about", h("div", { class: "row nowrap" },
+          h("input", { type: "number", min: 1, step: "any", value: st.yield_g, style: { maxWidth: "140px" }, oninput: e => { st.yield_g = +e.target.value; drawPreview(); } }),
+          h("span", { class: "muted" }, "g")),
+          h("span", { class: "muted small" }, guess
+            ? `Everything that goes in, water included, adds up to about ${fmt(guess)} g. If it cooks down, weigh the finished batch or estimate it (1 cup ≈ 240 g).`
+            : "Weigh the finished batch, or estimate it (1 cup ≈ 240 g).")),
+        fld("Aisle", h("select", { onchange: e => { st.aisle = e.target.value; } },
+          Z.AISLES.map(a => h("option", { selected: a === st.aisle }, a)))),
+        h("div", { class: "field" }, h("span", null, "Nutrients"), preview),
+        h("div", { class: "row", style: { justifyContent: "flex-end", marginTop: "8px" } },
+          ex ? h("button", { class: "btn ghost danger", style: { marginRight: "auto" }, onclick: async () => {
+            if (!confirm(`Remove “${ex.name}” from the pantry? The recipe stays.`)) return;
+            try { await api("DELETE", `/api/ingredients/${ex.id}`); await reload(); close(); render(); toast("Removed from the pantry"); }
+            catch (e) { toast(e.message, true); }
+          } }, "Remove from pantry") : null,
+          h("a", { class: "btn ghost", href: "#recipe/" + encodeURIComponent(r.id), onclick: close }, "Open recipe"), save))));
+  document.body.append(scrim);
 }
 function apiKeyBanner() {
   const input = h("input", { type: "text", placeholder: "Paste your USDA API key", style: { maxWidth: "340px" } });
@@ -817,7 +897,15 @@ function openAddIngredient(query, onDone) {
   const draw = () => {
     tabs.replaceChildren(
       h("button", { class: tab === "usda" ? "on" : "", onclick: () => { tab = "usda"; draw(); } }, "Search USDA"),
-      h("button", { class: tab === "label" ? "on" : "", onclick: () => { tab = "label"; draw(); } }, "From a nutrition label"));
+      h("button", { class: tab === "label" ? "on" : "", onclick: () => { tab = "label"; draw(); } }, "From a nutrition label"),
+      h("button", { class: tab === "recipe" ? "on" : "", onclick: () => { tab = "recipe"; draw(); } }, "From a recipe"));
+    if (tab === "recipe") {
+      body.replaceChildren(h("div", { class: "empty", style: { padding: "24px 12px" } }, svg("pot", "big-ic"),
+        h("h2", null, "Homemade broth, sauce or dressing?"),
+        h("p", null, "Use one of your recipes as a pantry item. Its nutrients come from the recipe and update when you edit it."),
+        h("button", { class: "btn primary", onclick: () => { close(); chooseHomemade(ing => { if (onDone) onDone(ing); }); } }, "Choose a recipe")));
+      return;
+    }
     body.replaceChildren(tab === "usda" ? usdaSearchPane(query, done) : h("div", null,
       h("div", { class: "banner scan-banner" }, svg("camera"), h("div", { style: { flex: 1 } },
         h("b", null, "Have the package handy?"), h("p", { class: "small", style: { margin: "2px 0 8px" } }, "Take a photo of the Nutrition Facts panel and the values are filled in for you."),
@@ -872,6 +960,7 @@ function usdaSearchPane(query, done) {
   return wrap;
 }
 function openIngredient(i) {
+  if (i.from_recipe && recipeById(i.from_recipe)) { openHomemade(recipeById(i.from_recipe)); return; }
   const close = () => scrim.remove();
   const scrim = h("div", { class: "scrim center", onclick: e => { if (e.target === scrim) close(); } },
     h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": "Edit ingredient" },

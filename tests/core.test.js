@@ -60,3 +60,24 @@ assert.strictEqual(sm.current.needDays, 1);
 assert.strictEqual(sm.current.daysLeft, 4);   // Thu–Sun
 assert.strictEqual(sm.current.stillPossible, true);
 console.log("amino, schedule & tracker ok");
+
+// homemade pantry items: a recipe used as an ingredient
+{
+  const ing = { veg: { id: "veg", nutrients: { kcal: 40, protein: 1 }, portions: [{ label: "cup", grams: 128 }] },
+    bean: { id: "bean", nutrients: { kcal: 100, protein: 5 }, portions: [] } };
+  const broth = { servings: 4, ingredients: [{ ingredient_id: "veg", amount: 2, unit: "cup" }, { ingredient_id: "bean", amount: 100, unit: "g" },
+    { ingredient_id: null, name: "water", amount: 6, unit: "cups", ignore: true }] };
+  assert.strictEqual(Z.recipeYieldGuess(broth, ing), 256 + 100 + 1440);   // water counts toward the batch weight
+  const d = Z.recipeAsIngredient(broth, ing, 1200);
+  assert.ok(Math.abs(d.nutrients.kcal - (102.4 + 100) / 1200 * 100) < 1e-3, d.nutrients.kcal);
+  assert.ok(Math.abs(d.nutrients.protein - (2.56 + 5) / 1200 * 100) < 1e-3);
+  assert.deepStrictEqual(d.portions.slice(0, 2).map(p => [p.label, p.grams]), [["serving", 300], ["batch", 1200]]);
+  // a nutrient only some ingredients have stays unknown rather than being undercounted
+  ing.veg.nutrients.aa_lys = 0.05;
+  assert.ok(!("aa_lys" in Z.recipeAsIngredient(broth, ing, 1200).nutrients));
+  // used in another recipe, it adds up like any pantry item
+  ing.home = { id: "home", nutrients: d.nutrients, portions: d.portions };
+  const soup = { servings: 2, ingredients: [{ ingredient_id: "home", amount: 2, unit: "cup" }] };
+  assert.ok(Math.abs(Z.recipeNutrition(soup, ing).per_serving.kcal - d.nutrients.kcal * 480 / 100 / 2) < 1e-6);
+}
+console.log("homemade pantry items ok");

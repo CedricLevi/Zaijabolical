@@ -366,6 +366,42 @@ with sync_playwright() as p:
     pg.click(".link-row >> nth=0 >> text=No nutrition"); pg.wait_for_timeout(1500)
     assert pg.locator(".link-row").count() == nn - 1
 
+    # a recipe as a pantry item (homemade broth, sauce…)
+    pg.goto(BASE + "#pantry"); pg.wait_for_selector("table.table")
+    pg.click(".page-head >> text=From a recipe"); pg.wait_for_selector(".modal.wide .pcard")
+    pg.fill(".picker-tools input", "Simple Brown Rice"); pg.wait_for_timeout(300)
+    pg.click(".modal.wide .pcard >> nth=0"); pg.wait_for_selector(".home-form")
+    pg.fill(".home-form input[type=number]", "1000"); pg.wait_for_timeout(200)
+    assert "kcal" in pg.inner_text(".home-preview")
+    pg.screenshot(path=f"{OUT}/19c-homemade-form.png")
+    pg.click(".home-form >> text=Add to pantry"); pg.wait_for_selector("tr.homemade"); pg.wait_for_timeout(300)
+    home = pg.evaluate("Z.store.S.doc.ingredients.find(i => i.from_recipe)")
+    src = home["from_recipe"]
+    assert home["yield_g"] == 1000 and home["nutrients"]["kcal"] > 0 and home["source"] == "recipe", home
+    assert "Homemade" in pg.inner_text("tr.homemade") and "From the recipe" in pg.inner_text("tr.homemade")
+    pg.click(".toolbar .seg >> text=Homemade"); pg.wait_for_timeout(200)
+    assert pg.locator("tbody tr").count() == 1
+    pg.screenshot(path=f"{OUT}/19d-pantry-homemade.png")
+    pg.click(".toolbar .seg >> text=All"); pg.wait_for_timeout(200)
+    pg.screenshot(path=f"{OUT}/19e-pantry-all.png", full_page=True)
+    # editing the recipe updates the pantry item's nutrients
+    kcal0 = home["nutrients"]["kcal"]
+    pg.evaluate(f"""async () => {{ const r = JSON.parse(JSON.stringify(Z.store.S.doc.recipes.find(x => x.id === '{src}')));
+      r.ingredients[0].amount = Number(r.ingredients[0].amount) * 2; await Z.api.request('PUT', '/api/recipes/' + r.id, r); }}""")
+    kcal1 = pg.evaluate("Z.store.S.doc.ingredients.find(i => i.from_recipe).nutrients.kcal")
+    assert kcal1 > kcal0, (kcal0, kcal1)
+    # and it can't be put inside its own recipe
+    err = pg.evaluate(f"""async () => {{ const r = JSON.parse(JSON.stringify(Z.store.S.doc.recipes.find(x => x.id === '{src}')));
+      r.ingredients.push({{ ingredient_id: '{home["id"]}', amount: 1, unit: 'cup' }});
+      try {{ await Z.api.request('PUT', '/api/recipes/' + r.id, r); return null; }} catch (e) {{ return e.message; }} }}""")
+    assert err and "made from this recipe" in err, err
+    # it's usable in another recipe and shows up first on the shopping list as something to make
+    pg.evaluate(f"""async () => {{ const r = JSON.parse(JSON.stringify(Z.store.S.doc.recipes.find(x => x.id !== '{src}' && x.ingredients.length)));
+      r.ingredients.push({{ ingredient_id: '{home["id"]}', amount: 1, unit: 'cup' }}); await Z.api.request('PUT', '/api/recipes/' + r.id, r); }}""")
+    pg.evaluate("reload()"); pg.wait_for_timeout(300)
+    pg.goto(BASE + "#recipe/" + src); pg.wait_for_selector(".detail-bar")
+    assert pg.locator(".detail-bar .btn.in-pantry").count() == 1
+
     # prep + settings
     pg.goto(BASE + "#prep"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/10-prep.png", full_page=True)
     assert pg.locator(".prep-tl .lane").count() >= 2 and "start to finish" in pg.inner_text(".prep-tl")

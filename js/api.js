@@ -162,6 +162,41 @@
     return { added, skipped };
   }
 
+  // ---------------- homemade pantry items: a recipe (broth, sauce…) used as an ingredient ----------------
+  /** recompute every homemade item from its recipe; repeats so a sauce made with a homemade broth follows it */
+  function refreshHomemade() {
+    for (let pass = 0; pass < 6; pass++) {
+      let changed = false;
+      const ing = ingMap(), rec = recipeMap();
+      for (const i of doc().ingredients) {
+        if (!i.from_recipe || !rec[i.from_recipe]) continue;
+        const d = Z.recipeAsIngredient(rec[i.from_recipe], ing, i.yield_g);
+        const portions = [...d.portions, ...(i.portions || []).filter(p => !p.auto && !d.portions.some(x => x.label === p.label))];
+        if (JSON.stringify(d.nutrients) === JSON.stringify(i.nutrients) && JSON.stringify(portions) === JSON.stringify(i.portions || [])) continue;
+        store().upsert("ingredients", { ...clone(i), nutrients: d.nutrients, portions });
+        changed = true;
+      }
+      if (!changed) return;
+    }
+  }
+  /** recipe ids this pantry item is made from, following homemade items inside homemade items */
+  function madeFrom(ingId, seen = new Set()) {
+    const i = ingMap()[ingId];
+    if (!i || !i.from_recipe || seen.has(i.from_recipe)) return seen;
+    seen.add(i.from_recipe);
+    const r = recipeMap()[i.from_recipe];
+    for (const l of (r && r.ingredients) || []) if (l.ingredient_id) madeFrom(l.ingredient_id, seen);
+    return seen;
+  }
+  function checkNoLoop(r) {
+    if (!r.id) return;
+    for (const l of r.ingredients || []) {
+      if (l.ingredient_id && madeFrom(l.ingredient_id).has(r.id)) {
+        throw new ApiError(`“${ingMap()[l.ingredient_id].name}” is made from this recipe, so it can't be one of its ingredients.`);
+      }
+    }
+  }
+
   // ---------------- validation ----------------
   function cleanRecipe(d) {
     if (!String(d.name || "").trim()) throw new ApiError("Give the recipe a name");
@@ -190,6 +225,8 @@
     const i = clone(d); i.name = i.name.trim(); i.nutrients = i.nutrients || {}; i.portions = i.portions || [];
     for (const [k, v] of Object.entries(i.nutrients)) if (v === "" || v == null || !isFinite(Number(v))) delete i.nutrients[k]; else i.nutrients[k] = Number(v);
     i.aisle = i.aisle || "Other"; i.source = i.source || "manual"; i.verify = !!i.verify;
+    if (i.from_recipe) { i.source = "recipe"; i.yield_g = Math.max(1, Number(i.yield_g) || 0) || null; i.verify = false; }
+    else { delete i.from_recipe; delete i.yield_g; }
     return i;
   }
 
@@ -214,12 +251,25 @@
   });
   route("POST", "/api/settings/reset_targets", () => { store().setSetting("targets", Z.defaultTargets()); return { value: clone(settings().targets) }; });
 
-  route("POST", "/api/ingredients", (p, body) => clone(store().upsert("ingredients", cleanIngredient(body))));
-  route("PUT", "/api/ingredients/:id", (p, body) => clone(store().upsert("ingredients", cleanIngredient({ ...body, id: p.id }))));
+  const withRefresh = rec => { refreshHomemade(); return clone(ingMap()[rec.id] || rec); };
+  route("POST", "/api/ingredients", (p, body) => withRefresh(store().upsert("ingredients", cleanIngredient(body))));
+  route("PUT", "/api/ingredients/:id", (p, body) => withRefresh(store().upsert("ingredients", cleanIngredient({ ...body, id: p.id }))));
+  /** make a recipe into a pantry item (or update the one already made from it) */
+  route("POST", "/api/ingredients/from-recipe", (p, body) => {
+    const r = recipeMap()[body.recipe_id];
+    if (!r) throw new ApiError("That recipe isn't here any more", 404);
+    const ex = doc().ingredients.find(i => i.from_recipe === r.id);
+    const yieldG = Number(body.yield_g) > 0 ? Number(body.yield_g) : Z.recipeYieldGuess(r, ingMap());
+    if (!(yieldG > 0)) throw new ApiError("Enter about how much the whole batch weighs");
+    const rec = store().upsert("ingredients", cleanIngredient({ ...(ex ? clone(ex) : { nutrients: {}, portions: [] }),
+      name: String(body.name || (ex && ex.name) || r.name).trim(), aisle: body.aisle || (ex && ex.aisle) || "Homemade",
+      from_recipe: r.id, yield_g: yieldG }));
+    return withRefresh(rec);
+  });
   route("DELETE", "/api/ingredients/:id", p => {
     const used = doc().recipes.filter(r => (r.ingredients || []).some(l => l.ingredient_id === p.id)).map(r => r.name);
     if (used.length) throw new ApiError(`Used in: ${used.join(", ")}. Remove it from those recipes first.`, 409);
-    store().remove("ingredients", p.id); return { ok: true };
+    store().remove("ingredients", p.id); refreshHomemade(); return { ok: true };
   });
   route("GET", "/api/usda/search", (p, b, qs) => {
     const q = (qs.get("q") || "").trim();
@@ -229,8 +279,13 @@
   });
   route("GET", "/api/usda/food/:id", p => usdaFood(p.id));
 
-  route("POST", "/api/recipes", (p, body) => recipeOut(store().upsert("recipes", cleanRecipe(body)), ingMap()));
-  route("PUT", "/api/recipes/:id", (p, body) => recipeOut(store().upsert("recipes", cleanRecipe({ ...body, id: p.id })), ingMap()));
+  const savedRecipe = rec => { refreshHomemade(); return recipeOut(recipeMap()[rec.id] || rec, ingMap()); };
+  route("POST", "/api/recipes", (p, body) => savedRecipe(store().upsert("recipes", cleanRecipe(body))));
+  route("PUT", "/api/recipes/:id", (p, body) => {
+    const r = cleanRecipe({ ...body, id: p.id });
+    checkNoLoop(r);
+    return savedRecipe(store().upsert("recipes", r));
+  });
   route("DELETE", "/api/recipes/:id", p => {
     const r = doc().recipes.find(x => x.id === p.id);
     if (r && Z.media) for (const m of [...(r.photos || []), ...(r.attachments || [])]) Z.media.remove(m);

@@ -330,6 +330,11 @@ function viewRecipe(id) {
   root.append(h("div", { class: "detail-bar no-print" },
     h("a", { class: "btn ghost", href: "#recipes" }, svg("back"), "Recipes"),
     h("div", { class: "row" },
+      (() => {   // use it as a pantry item (broths, sauces…)
+        const inPantry = S.data.ingredients.find(i => i.from_recipe === r.id);
+        return h("button", { class: "btn" + (inPantry ? " in-pantry" : ""), title: inPantry ? `In the pantry as “${inPantry.name}”` : "Use this recipe as an ingredient in other recipes",
+          onclick: () => openHomemade(r) }, svg(inPantry ? "check" : "pot"), h("span", { class: "hide-xs" }, inPantry ? "In pantry" : "Add to pantry"));
+      })(),
       h("button", { class: "btn", onclick: () => printRecipe(r) }, svg("print"), h("span", { class: "hide-xs" }, "Print")),
       h("button", { class: "btn primary", onclick: () => openRecipe(r) }, svg("edit"), "Edit"))));
   root.append(h("h1", { class: "detail-title" }, r.name));
@@ -583,7 +588,8 @@ function openRecipe(r, opts = {}) {
       const guess = typed && !current ? matchIngredient(typed) : null;
       if (guess && !hits.includes(guess)) hits.unshift(guess);
       hits = hits.slice(0, 30);
-      menu.replaceChildren(...hits.map(i => h("button", { type: "button", onmousedown: e => { e.preventDefault(); input.value = i.name; menu.classList.add("hidden"); onPick(i); } }, i.name)),
+      menu.replaceChildren(...hits.map(i => h("button", { type: "button", class: i.from_recipe ? "homemade" : null, onmousedown: e => { e.preventDefault(); input.value = i.name; menu.classList.add("hidden"); onPick(i); } },
+        i.name, i.from_recipe ? h("span", { class: "tag homemade" }, "Homemade") : null)),
         h("button", { type: "button", class: "new", onmousedown: e => { e.preventDefault(); menu.classList.add("hidden"); openAddIngredient(input.value.trim(), ing => { if (ing) onPick(ing); }); } },
           q ? `+ Add “${input.value}” to pantry` : "+ Add a new ingredient"));
       menu.classList.remove("hidden");
@@ -704,7 +710,8 @@ function openRecipe(r, opts = {}) {
       original ? h("div", { class: "drawer-foot" },
         h("button", { class: "btn danger", onclick: async () => {
           if (!confirm(`Delete “${original.name}”? Its photos and attachments are deleted too.`)) return;
-          await api("DELETE", `/api/recipes/${original.id}`); await reload(); close(true); toast("Recipe deleted");
+          await api("DELETE", `/api/recipes/${original.id}`); await reload(); close(true);
+          toast(S.data.ingredients.some(i => i.from_recipe === original.id) ? "Recipe deleted. Its pantry item keeps its last nutrients." : "Recipe deleted");
           location.hash = "#recipes";
         } }, svg("trash"), "Delete recipe"),
         h("button", { class: "btn primary", onclick: save }, "Save")) : null));
