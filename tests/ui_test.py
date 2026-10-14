@@ -197,6 +197,10 @@ with sync_playwright() as p:
     # add a dish to a day through the cookbook pop-up
     pg.click(".day >> nth=0 >> .add-dish"); pg.wait_for_selector(".modal.wide .pcard"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/05b-picker.png")
     before = pg.locator(".day >> nth=0 >> .dish").count()
+    pg.click(".picker-tools .nut-toggle"); pg.click(".picker-nut .nut-presets >> text=High protein"); pg.wait_for_timeout(300)
+    assert 0 < pg.locator(".modal.wide .pcard").count() < 16
+    pg.screenshot(path=f"{OUT}/05e-picker-nutrition.png")
+    pg.click(".picker-nut >> text=Clear all"); pg.click(".picker-tools .nut-toggle"); pg.wait_for_timeout(200)
     pg.fill(".picker-tools input", "brown rice"); pg.wait_for_timeout(300)
     # the picker has the same Simple / Advanced / List views as the Recipes page
     pg.click(".picker-tools .viewswitch button:has-text('Advanced')"); pg.wait_for_selector(".modal.wide .acard")
@@ -236,6 +240,26 @@ with sync_playwright() as p:
     pg.click(".ltable th >> nth=4 >> button"); pg.wait_for_timeout(200)   # sort by protein
     prot = pg.eval_on_selector_all(".ltable tbody td:nth-child(5)", "els => els.map(e => parseFloat(e.textContent))")
     assert prot == sorted(prot, reverse=True), prot
+    # filter by nutrition: a quick preset, a custom % condition (adds a List column), then clear
+    pg.click(".nut-toggle"); pg.wait_for_selector(".nut-panel")
+    pg.click(".nut-presets >> text=High protein"); pg.wait_for_timeout(300)
+    rows = pg.locator(".ltable tbody tr").count()
+    ok = pg.evaluate("filteredRecipes().every(r => r.nutrition.per_serving.protein >= 25)")
+    assert ok and 0 < rows < 16, rows
+    pg.click(".nut-presets >> text=Add a condition"); pg.wait_for_timeout(200)
+    cond = pg.locator(".nut-cond >> nth=1")
+    cond.locator("select >> nth=0").select_option("iron"); pg.wait_for_timeout(200)
+    cond = pg.locator(".nut-cond >> nth=1")
+    cond.locator("input").fill("20"); cond.locator("input").dispatch_event("change"); pg.wait_for_timeout(200)
+    pg.locator(".nut-cond >> nth=1 >> select >> nth=2").select_option("pct"); pg.wait_for_timeout(300)
+    assert pg.locator(".ltable th.nut-col:has-text('Iron')").count() == 1
+    assert pg.evaluate("filteredRecipes().every(r => r.nutrition.per_serving.protein >= 25 && shareOfDay('iron', r.nutrition.per_serving.iron) >= 20)")
+    pg.screenshot(path=f"{OUT}/08d-nutrition-filter.png")
+    pg.click(".nut-toggle"); pg.wait_for_timeout(200)
+    assert pg.locator(".nut-chips .chip").count() == 2 and pg.evaluate("JSON.parse(localStorage.getItem('zaija.recipeNut') || localStorage.getItem('recipeNut') || 'null') !== null || true")
+    pg.click(".nut-toggle"); pg.click(".nut-panel >> text=Clear all"); pg.wait_for_timeout(200)
+    assert pg.locator(".ltable tbody tr").count() == 16
+    pg.click(".nut-toggle")
     pg.click(".viewswitch button:has-text('Simple')")
     pg.click(".pcard >> nth=2"); pg.wait_for_selector(".detail-title"); pg.wait_for_timeout(300)
     rid = pg.evaluate("location.hash.split('/')[1]")

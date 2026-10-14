@@ -3,6 +3,7 @@
 "use strict";
 
 const RECIPE_ICONS = {
+  funnel: '<path d="M3 4h18l-7 8.5V19l-4 2v-8.5z"/>',
   camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
   edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
@@ -150,7 +151,7 @@ function nutritionPanel(r, { title = "One serving", wide } = {}) {
    RECIPES: list views
    ================================================================ */
 function recipeFilterState() {
-  if (!S.recipeFilter.sort) Object.assign(S.recipeFilter, { sort: store.get("recipeSort", "name"), rating: "any" });
+  if (!S.recipeFilter.sort) Object.assign(S.recipeFilter, { sort: store.get("recipeSort", "name"), rating: "any", nut: store.get("recipeNut", []) });
   if (!S.recipeView) S.recipeView = store.get("recipeView", "simple");
   if (!S.advSection) S.advSection = store.get("advSection", "Macros");
   return S.recipeFilter;
@@ -162,7 +163,78 @@ function filteredRecipes() {
     (!q || r.name.toLowerCase().includes(q) || (r.tags || []).join(" ").toLowerCase().includes(q) || (r.description || "").toLowerCase().includes(q)));
   if (f.rating === "none") list = list.filter(r => !r.rating);
   else if (f.rating !== "any") list = list.filter(r => (r.rating || 0) >= Number(f.rating));
-  return sortRecipes(list, f);
+  return sortRecipes(list.filter(r => nutPass(r, f.nut)), f);
+}
+
+/* ---------------- filter by nutrition (per serving) ---------------- */
+const NUT_PRESETS = [
+  { label: "High protein", key: "protein", op: "min", value: 25, mode: "abs" },
+  { label: "Under 500 kcal", key: "kcal", op: "max", value: 500, mode: "abs" },
+  { label: "High fiber", key: "fiber", op: "min", value: 8, mode: "abs" },
+  { label: "Iron-rich", key: "iron", op: "min", value: 25, mode: "pct" },
+  { label: "Calcium-rich", key: "calcium", op: "min", value: 25, mode: "pct" },
+  { label: "B12", key: "b12", op: "min", value: 25, mode: "pct" },
+  { label: "Low sodium", key: "sodium", op: "max", value: 20, mode: "pct" },
+];
+const nutInfo = key => S.data.nutrients.find(n => n.key === key) || { key, name: key, unit: "" };
+/** the value a condition compares: per serving, or % of her daily target */
+function nutValue(r, c) {
+  const v = r.nutrition.per_serving[c.key];
+  if (v == null || (r.nutrition.missing[c.key] || 0) > 0.5) return null;   // mostly unknown: don't guess
+  return c.mode === "pct" ? shareOfDay(c.key, v) : v;
+}
+function nutPass(r, conds) {
+  for (const c of conds || []) {
+    if (!(c.value >= 0)) continue;
+    const v = nutValue(r, c);
+    if (v == null || (c.op === "max" ? v > c.value : v < c.value)) return false;
+  }
+  return true;
+}
+function nutLabel(c) {
+  const n = nutInfo(c.key);
+  return `${n.name} ${c.op === "max" ? "≤" : "≥"} ${fmt(c.value)}${c.mode === "pct" ? "% of her day" : " " + n.unit}`;
+}
+/** the "Nutrition" filter: a toggle button plus (when open) a panel of conditions; chips summarise it when closed */
+function nutFilter(f, redraw, { persist = true } = {}) {
+  f.nut = f.nut || [];
+  const save = () => { if (persist) store.set("recipeNut", f.nut); redraw(); };
+  const n = f.nut.length;
+  const toggle = h("button", { class: "btn pill nut-toggle" + (n ? " on" : ""), "aria-expanded": !!f.nutOpen,
+    onclick: () => { f.nutOpen = !f.nutOpen; redraw(); } }, svg("funnel"), n ? `Nutrition (${n})` : "Nutrition");
+  let panel = null;
+  if (f.nutOpen) {
+    const groups = S.data.groups.map(g => h("optgroup", { label: g }, S.data.nutrients.filter(x => x.group === g)
+      .map(x => h("option", { value: x.key }, x.name))));
+    const rows = f.nut.map((c, i) => {
+      const unitSel = h("select", { "aria-label": "Unit", onchange: e => { c.mode = e.target.value; save(); } },
+        h("option", { value: "abs", selected: c.mode !== "pct" }, nutInfo(c.key).unit || "amount"),
+        h("option", { value: "pct", selected: c.mode === "pct" }, "% of her day"));
+      const keySel = h("select", { "aria-label": "Nutrient", onchange: e => { c.key = e.target.value; save(); } }, groups.map(g => g.cloneNode(true)));
+      keySel.value = c.key;
+      return h("div", { class: "nut-cond" },
+        keySel,
+        h("select", { "aria-label": "At least or at most", onchange: e => { c.op = e.target.value; save(); } },
+          h("option", { value: "min", selected: c.op !== "max" }, "at least"), h("option", { value: "max", selected: c.op === "max" }, "at most")),
+        h("input", { type: "number", min: 0, step: "any", value: c.value, "aria-label": "Amount",
+          onchange: e => { c.value = e.target.value === "" ? null : +e.target.value; save(); } }),
+        unitSel,
+        h("button", { class: "icon-btn", "aria-label": "Remove " + nutLabel(c), onclick: () => { f.nut.splice(i, 1); save(); } }, svg("x")));
+    });
+    panel = h("div", { class: "panel nut-panel" },
+      h("div", { class: "row between" }, h("b", null, "Per serving"),
+        n ? h("button", { class: "btn sm ghost", onclick: () => { f.nut.length = 0; save(); } }, "Clear all") : null),
+      ...rows,
+      h("div", { class: "row tight nut-presets" },
+        h("button", { class: "btn sm", onclick: () => { f.nut.push({ key: "protein", op: "min", value: 20, mode: "abs" }); save(); } }, svg("plus"), "Add a condition"),
+        h("span", { class: "muted small" }, "or quick:"),
+        NUT_PRESETS.filter(p => !f.nut.some(c => c.key === p.key && c.op === p.op)).map(p => h("button", { class: "chip-btn", title: nutLabel(p),
+          onclick: () => { f.nut.push({ ...p }); delete f.nut[f.nut.length - 1].label; save(); } }, p.label))),
+      h("p", { class: "muted small", style: { margin: "6px 0 0" } }, "Recipes whose data is mostly missing for a nutrient are left out when you filter by it."));
+  }
+  const chips = !f.nutOpen && n ? h("div", { class: "row tight nut-chips" }, f.nut.map((c, i) => h("span", { class: "chip" }, nutLabel(c),
+    h("button", { "aria-label": "Remove " + nutLabel(c), onclick: () => { f.nut.splice(i, 1); save(); } }, svg("x"))))) : null;
+  return { toggle, below: panel || chips };
 }
 function sortRecipes(list, f) {
   const per = r => r.nutrition.per_serving;
@@ -175,6 +247,8 @@ function sortRecipes(list, f) {
     category: (a, b) => CATS.indexOf(a.category) - CATS.indexOf(b.category) || by.name(a, b),
     carbs: (a, b) => per(b).carbs - per(a).carbs, fat: (a, b) => per(b).fat - per(a).fat,
   };
+  const nk = /^n:(.+)$/.exec(f.sort || "");
+  if (nk) by[f.sort] = (a, b) => (per(b)[nk[1]] || 0) - (per(a)[nk[1]] || 0) || by.name(a, b);
   list.sort(by[f.sort] || by.name);
   if (f.reverse) list.reverse();
   return list;
@@ -205,10 +279,15 @@ function viewRecipes() {
     Object.entries(RATING_FILTERS).map(([v, l]) => h("option", { value: v, selected: String(f.rating) === v }, l)));
   const sortSel = h("select", { class: "pill", "aria-label": "Sort", onchange: e => { f.sort = e.target.value; f.reverse = false; store.set("recipeSort", f.sort); render(); } },
     Object.entries(SORTS).map(([v, l]) => h("option", { value: v, selected: f.sort === v }, "Sort: " + l)),
-    SORTS[f.sort] ? null : h("option", { value: f.sort, selected: true }, "Sort: " + f.sort));
-  root.append(h("div", { class: "toolbar rtools" }, search, ratingSel, sortSel, seg, viewSwitch(render)));
+    SORTS[f.sort] || /^n:/.test(f.sort) ? null : h("option", { value: f.sort, selected: true }, "Sort: " + f.sort));
+  const nf = nutFilter(f, render);
+  const sortKeys = [...(f.nut || []).map(c => c.key), ...(/^n:/.test(f.sort) ? [f.sort.slice(2)] : [])];
+  for (const k of sortKeys) if (!["protein", "kcal"].includes(k) && !sortSel.querySelector(`option[value="n:${k}"]`)) {
+    sortSel.append(h("option", { value: "n:" + k, selected: f.sort === "n:" + k }, "Sort: Most " + nutInfo(k).name.toLowerCase()));
+  }
+  root.append(h("div", { class: "toolbar rtools" }, search, ratingSel, sortSel, nf.toggle, seg, viewSwitch(render)), nf.below);
   const list = filteredRecipes();
-  if (!list.length) { root.append(h("p", { class: "muted" }, "No recipes match.")); return root; }
+  if (!list.length) { root.append(h("p", { class: "muted" }, (f.nut || []).length ? "No recipes match. Try loosening the nutrition filter." : "No recipes match.")); return root; }
   if (S.recipeView === "advanced") {
     root.append(advHead(render));
     root.append(h("div", { class: "cards adv" }, list.map(advancedCard)));
@@ -262,6 +341,10 @@ function advancedCard(r, onClick) {
     rows);
 }
 function listTable(list, { onOpen = goRecipe, f = S.recipeFilter, redraw = () => { store.set("recipeSort", f.sort); render(); } } = {}) {
+  const extra = [...new Set((f.nut || []).map(c => c.key))].filter(k => !["kcal", "protein", "carbs", "fat"].includes(k));
+  const extraCell = (r, k) => { const v = r.nutrition.per_serving[k]; const unknown = (r.nutrition.missing[k] || 0) > 0.5;
+    const pct = shareOfDay(k, v || 0);
+    return h("td", { class: "num nut-col" }, unknown ? "?" : fmt(v, nutInfo(k).unit), !unknown && pct != null ? h("small", { class: "muted" }, ` ${Math.round(pct)}%`) : null); };
   const th = (label, key, cls) => h("th", { class: cls || null },
     h("button", { class: "sorter" + (f.sort === key ? " on" : ""), onclick: () => {
       if (f.sort === key) f.reverse = !f.reverse; else { f.sort = key; f.reverse = false; }
@@ -269,7 +352,8 @@ function listTable(list, { onOpen = goRecipe, f = S.recipeFilter, redraw = () =>
     } }, label, f.sort === key ? (f.reverse ? " ↑" : " ↓") : ""));
   return h("div", { class: "panel table-wrap ltable-wrap" }, h("table", { class: "table ltable" },
     h("thead", null, h("tr", null, th("Recipe", "name"), th("Rating", "rating"), th("Category", "category", "hide-sm"),
-      th("Calories", "kcal", "num"), th("Protein", "protein", "num"), th("Carbs", "carbs", "num hide-sm"), th("Fat", "fat", "num hide-sm"))),
+      th("Calories", "kcal", "num"), th("Protein", "protein", "num"), th("Carbs", "carbs", "num hide-sm"), th("Fat", "fat", "num hide-sm"),
+      ...extra.map(k => th(nutInfo(k).name, "n:" + k, "num nut-col")))),
     h("tbody", null, list.map(r => {
       const p = r.nutrition.per_serving;
       return h("tr", { class: "click" + (r.active ? "" : " inactive"), onclick: () => onOpen(r), tabindex: 0, onkeydown: e => { if (e.key === "Enter") onOpen(r); } },
@@ -277,7 +361,8 @@ function listTable(list, { onOpen = goRecipe, f = S.recipeFilter, redraw = () =>
         h("td", null, stars(r.rating)),
         h("td", { class: "hide-sm" }, h("span", { class: "tag cat-" + r.category }, r.category)),
         h("td", { class: "num" }, fmt(p.kcal)), h("td", { class: "num" }, fmt(p.protein, "g")),
-        h("td", { class: "num hide-sm" }, fmt(p.carbs, "g")), h("td", { class: "num hide-sm" }, fmt(p.fat, "g")));
+        h("td", { class: "num hide-sm" }, fmt(p.carbs, "g")), h("td", { class: "num hide-sm" }, fmt(p.fat, "g")),
+        ...extra.map(k => extraCell(r, k)));
     }))));
 }
 
@@ -405,7 +490,7 @@ function printRecipe(r) {
   document.getElementById("print-root")?.remove();
   const ing = Object.fromEntries(S.data.ingredients.map(i => [i.id, i]));
   const per = r.nutrition.per_serving;
-  const key = ["kcal", "protein", "carbs", "fat", "fiber", "iron", "calcium", "zinc"].map(k => nutMeta(k)).filter(Boolean);
+  const key = ["kcal", "protein", "carbs", "fat", "fiber", "iron", "calcium", "zinc"].map(k => nutInfo(k)).filter(Boolean);
   const p = (r.photos || [])[0];
   const root = h("div", { id: "print-root", class: "print-recipe" },
     h("div", { class: "pr-head" },
@@ -838,7 +923,7 @@ function labelNutrients(result) {
   const toMg = { g: 1000, mg: 1, mcg: 0.001, "µg": 0.001, ug: 0.001 };
   for (const [lk, v] of Object.entries(result.nutrients || {})) {
     const key = LABEL_MAP[lk];
-    const meta = key && nutMeta(key);
+    const meta = key && nutInfo(key);
     if (!meta || !v) continue;
     const base = meta.unit.split(" ")[0].replace("µg", "mcg");
     let val = null;
@@ -903,20 +988,24 @@ function openLabelReview(result, onDone) {
 /* ---------------- recipe picker: the cookbook in a pop-up, for adding a dish somewhere ---------------- */
 function pickRecipe({ title, onPick, exclude = [], onlyActive = false }) {
   recipeFilterState();   // loads the remembered view
-  const st = { q: "", cat: "All", sort: "rating", reverse: false };
+  const st = { q: "", cat: "All", sort: "rating", reverse: false, nut: [] };
   const close = () => { scrim.remove(); document.removeEventListener("keydown", esc); };
   const body = h("div", { class: "drawer-body" });
   const seg = h("div", { class: "seg cats" });
-  const viewBox = h("span", { class: "picker-view" });
+  const viewBox = h("span", { class: "picker-view row tight" });
+  const nutBox = h("div", { class: "picker-nut" });
   const pick = r => { close(); onPick(r); };
   const draw = () => {
     seg.replaceChildren(...["All", ...CATS].map(c => h("button", { class: st.cat === c ? "on" : "", onclick: () => { st.cat = c; draw(); } }, c)));
-    viewBox.replaceChildren(viewSwitch(draw));
+    const nf = nutFilter(st, draw, { persist: false });
+    viewBox.replaceChildren(nf.toggle, viewSwitch(draw));
+    nutBox.replaceChildren(...(nf.below ? [nf.below] : []));
     const q = st.q.toLowerCase().trim();
     const list = sortRecipes(S.data.recipes.filter(r => r.ingredients.length && (!onlyActive || r.active) && !exclude.includes(r.id) &&
-      (st.cat === "All" || r.category === st.cat) && (!q || r.name.toLowerCase().includes(q) || (r.tags || []).join(" ").toLowerCase().includes(q))), st);
+      (st.cat === "All" || r.category === st.cat) && (!q || r.name.toLowerCase().includes(q) || (r.tags || []).join(" ").toLowerCase().includes(q)) &&
+      nutPass(r, st.nut)), st);
     const top = body.scrollTop;
-    if (!list.length) body.replaceChildren(h("p", { class: "muted" }, "No recipes match."));
+    if (!list.length) body.replaceChildren(h("p", { class: "muted" }, st.nut.length ? "No recipes match. Try loosening the nutrition filter." : "No recipes match."));
     else if (S.recipeView === "advanced") body.replaceChildren(advHead(draw), h("div", { class: "cards adv picker-cards" }, list.map(r => advancedCard(r, pick))));
     else if (S.recipeView === "list") body.replaceChildren(listTable(list, { onOpen: pick, f: st, redraw: draw }));
     else body.replaceChildren(h("div", { class: "cards picker-cards" }, list.map(r => simpleCard(r, pick))));
@@ -928,7 +1017,7 @@ function pickRecipe({ title, onPick, exclude = [], onlyActive = false }) {
     h("div", { class: "modal wide", role: "dialog", "aria-modal": "true", "aria-label": title },
       h("div", { class: "drawer-head" }, h("h2", null, title), h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, svg("x"))),
       h("div", { class: "picker-tools" }, search, seg, viewBox),
-      body));
+      nutBox, body));
   function esc(e) { if (e.key === "Escape") close(); }
   document.addEventListener("keydown", esc);
   document.body.append(scrim);
