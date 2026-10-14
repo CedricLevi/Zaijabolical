@@ -41,17 +41,44 @@ function stars(rating, opts = {}) {
   }
   return wrap;
 }
-/** an <img> for a stored photo, filled in once it's loaded (downloaded from GitHub on first view) */
+/* Photos load when they scroll near the screen. (The browser's own loading="lazy" is unreliable on iPhone
+   inside the app's scrolling content area, and it wouldn't stop the download from GitHub anyway.) */
+const imgObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver(entries => {
+  for (const e of entries) if (e.isIntersecting) { imgObserver.unobserve(e.target); const go = e.target._load; e.target._load = null; if (go) go(); }
+}, { rootMargin: "300px 0px" }) : null;
+/** an <img> for a stored photo, filled in once it's loaded (downloaded from GitHub on first view).
+    attrs.fallback: another stored file to try if the first can't be loaded; attrs.onMissing(img): neither loaded */
 function mediaImg(path, type, attrs = {}) {
-  const img = h("img", { alt: attrs.alt || "", class: attrs.class || null, decoding: "async", loading: attrs.eager ? null : "lazy" });
+  const img = h("img", { alt: attrs.alt || "", class: attrs.class || null, decoding: "async" });
   img.classList.add("loading-img");
-  Z.media.url(path, type).then(u => { if (u) { img.src = u; img.onload = () => img.classList.remove("loading-img"); } else img.classList.add("missing"); });
+  const paths = [...new Set([path, attrs.fallback].filter(Boolean))];
+  const next = async i => {
+    for (; i < paths.length; i++) {
+      const u = await Z.media.url(paths[i], type).catch(() => null);
+      if (!u) continue;
+      const at = i;
+      img.onload = () => img.classList.remove("loading-img");
+      img.onerror = () => { img.onerror = null; next(at + 1); };
+      img.src = u;
+      return;
+    }
+    img.classList.remove("loading-img"); img.classList.add("missing");
+    if (attrs.onMissing) attrs.onMissing(img);
+  };
+  if (attrs.eager || !imgObserver) next(0); else { img._load = () => next(0); imgObserver.observe(img); }
   return img;
 }
-function coverEl(r, { thumb = true, cls = "cover" } = {}) {
+/** a recipe's main photo (its first one), or a placeholder */
+function coverEl(r, { cls = "cover" } = {}) {
   const p = (r.photos || [])[0];
-  if (p) return h("div", { class: cls }, mediaImg(thumb ? (p.thumb || p.path) : p.path, "image/jpeg", { alt: r.name }));
-  return h("div", { class: `${cls} placeholder ph-${r.category || "Main"}` }, svg("plate"));
+  const placeholder = () => [`placeholder`, `ph-${r.category || "Main"}`];
+  if (p) {
+    const box = h("div", { class: cls });
+    box.append(mediaImg(p.path, "image/jpeg", { alt: r.name, fallback: p.thumb,
+      onMissing: img => { box.classList.add(...placeholder()); img.replaceWith(svg("plate")); } }));
+    return box;
+  }
+  return h("div", { class: [cls, ...placeholder()].join(" ") }, svg("plate"));
 }
 function shareOfDay(key, v) {
   const T = S.data.settings.targets;
@@ -135,6 +162,9 @@ function filteredRecipes() {
     (!q || r.name.toLowerCase().includes(q) || (r.tags || []).join(" ").toLowerCase().includes(q) || (r.description || "").toLowerCase().includes(q)));
   if (f.rating === "none") list = list.filter(r => !r.rating);
   else if (f.rating !== "any") list = list.filter(r => (r.rating || 0) >= Number(f.rating));
+  return sortRecipes(list, f);
+}
+function sortRecipes(list, f) {
   const per = r => r.nutrition.per_serving;
   const by = {
     name: (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
@@ -176,19 +206,11 @@ function viewRecipes() {
   const sortSel = h("select", { class: "pill", "aria-label": "Sort", onchange: e => { f.sort = e.target.value; f.reverse = false; store.set("recipeSort", f.sort); render(); } },
     Object.entries(SORTS).map(([v, l]) => h("option", { value: v, selected: f.sort === v }, "Sort: " + l)),
     SORTS[f.sort] ? null : h("option", { value: f.sort, selected: true }, "Sort: " + f.sort));
-  const views = h("div", { class: "seg viewswitch", role: "tablist", "aria-label": "View" });
-  for (const [id, label, icon] of [["simple", "Simple", "grid"], ["advanced", "Advanced", "bars"], ["list", "List", "list"]]) {
-    views.append(h("button", { class: S.recipeView === id ? "on" : "", role: "tab", "aria-selected": S.recipeView === id,
-      onclick: () => { S.recipeView = id; store.set("recipeView", id); render(); } }, svg(icon), h("span", null, label)));
-  }
-  root.append(h("div", { class: "toolbar rtools" }, search, ratingSel, sortSel, seg, views));
+  root.append(h("div", { class: "toolbar rtools" }, search, ratingSel, sortSel, seg, viewSwitch(render)));
   const list = filteredRecipes();
   if (!list.length) { root.append(h("p", { class: "muted" }, "No recipes match.")); return root; }
   if (S.recipeView === "advanced") {
-    const sec = h("div", { class: "seg" });
-    for (const g of S.data.groups) sec.append(h("button", { class: S.advSection === g ? "on" : "", onclick: () => { S.advSection = g; store.set("advSection", g); render(); } }, g));
-    root.append(h("div", { class: "row adv-head" }, h("span", { class: "muted small" }, "Showing for every recipe:"), sec,
-      h("span", { class: "muted small" }, "% = share of her daily target in one serving")));
+    root.append(advHead(render));
     root.append(h("div", { class: "cards adv" }, list.map(advancedCard)));
   } else if (S.recipeView === "list") {
     root.append(listTable(list));
@@ -198,6 +220,21 @@ function viewRecipes() {
   return root;
 }
 const goRecipe = r => { location.hash = "#recipe/" + encodeURIComponent(r.id); };
+/** Simple / Advanced / List (remembered on this device, shared by the Recipes page and the picker) */
+function viewSwitch(redraw) {
+  const views = h("div", { class: "seg viewswitch", role: "tablist", "aria-label": "View" });
+  for (const [id, label, icon] of [["simple", "Simple", "grid"], ["advanced", "Advanced", "bars"], ["list", "List", "list"]]) {
+    views.append(h("button", { class: S.recipeView === id ? "on" : "", role: "tab", "aria-selected": S.recipeView === id,
+      onclick: () => { S.recipeView = id; store.set("recipeView", id); redraw(); } }, svg(icon), h("span", null, label)));
+  }
+  return views;
+}
+function advHead(redraw) {
+  const sec = h("div", { class: "seg" });
+  for (const g of S.data.groups) sec.append(h("button", { class: S.advSection === g ? "on" : "", onclick: () => { S.advSection = g; store.set("advSection", g); redraw(); } }, g));
+  return h("div", { class: "row adv-head" }, h("span", { class: "muted small" }, "Showing for every recipe:"), sec,
+    h("span", { class: "muted small" }, "% = share of her daily target in one serving"));
+}
 
 function simpleCard(r, onClick) {
   const per = r.nutrition.per_serving;
@@ -212,31 +249,30 @@ function simpleCard(r, onClick) {
         h("span", null, h("b", null, fmt(per.carbs)), "carbs"), h("span", null, h("b", null, fmt(per.fat)), "fat")),
       fingerprint(rows)));
 }
-function advancedCard(r) {
+function advancedCard(r, onClick) {
   const per = r.nutrition.per_serving;
   const rows = h("div", { class: "mbars" });
   for (const n of groupNutrients(S.advSection)) {
     rows.append(mbar(n, per[n.key] || 0));
     if (n.key === "protein") rows.append(aminoBars(r.nutrition.amino));
   }
-  return h("button", { class: "panel acard" + (r.active ? "" : " inactive"), onclick: () => goRecipe(r) },
+  return h("button", { class: "panel acard" + (r.active ? "" : " inactive"), onclick: () => (onClick || goRecipe)(r) },
     h("div", { class: "acard-h" }, coverEl(r, { cls: "thumb" }),
       h("div", { style: { minWidth: 0 } }, h("h3", null, r.name), stars(r.rating))),
     rows);
 }
-function listTable(list) {
-  const f = S.recipeFilter;
+function listTable(list, { onOpen = goRecipe, f = S.recipeFilter, redraw = () => { store.set("recipeSort", f.sort); render(); } } = {}) {
   const th = (label, key, cls) => h("th", { class: cls || null },
     h("button", { class: "sorter" + (f.sort === key ? " on" : ""), onclick: () => {
       if (f.sort === key) f.reverse = !f.reverse; else { f.sort = key; f.reverse = false; }
-      store.set("recipeSort", f.sort); render();
+      redraw();
     } }, label, f.sort === key ? (f.reverse ? " ↑" : " ↓") : ""));
   return h("div", { class: "panel table-wrap ltable-wrap" }, h("table", { class: "table ltable" },
     h("thead", null, h("tr", null, th("Recipe", "name"), th("Rating", "rating"), th("Category", "category", "hide-sm"),
       th("Calories", "kcal", "num"), th("Protein", "protein", "num"), th("Carbs", "carbs", "num hide-sm"), th("Fat", "fat", "num hide-sm"))),
     h("tbody", null, list.map(r => {
       const p = r.nutrition.per_serving;
-      return h("tr", { class: "click" + (r.active ? "" : " inactive"), onclick: () => goRecipe(r), tabindex: 0, onkeydown: e => { if (e.key === "Enter") goRecipe(r); } },
+      return h("tr", { class: "click" + (r.active ? "" : " inactive"), onclick: () => onOpen(r), tabindex: 0, onkeydown: e => { if (e.key === "Enter") onOpen(r); } },
         h("td", null, h("div", { class: "row tight nowrap" }, coverEl(r, { cls: "thumb sm" }), h("span", { class: "lname" }, r.name))),
         h("td", null, stars(r.rating)),
         h("td", { class: "hide-sm" }, h("span", { class: "tag cat-" + r.category }, r.category)),
@@ -268,7 +304,7 @@ function hero(r) {
   const photos = r.photos || [];
   if (!photos.length) return null;
   const track = h("div", { class: "hero-track" });
-  photos.forEach((p, i) => track.append(h("div", { class: "hero-slide" }, mediaImg(p.path, "image/jpeg", { alt: `${r.name}, photo ${i + 1}`, eager: i === 0 }))));
+  photos.forEach((p, i) => track.append(h("div", { class: "hero-slide" }, mediaImg(p.path, "image/jpeg", { alt: `${r.name}, photo ${i + 1}`, eager: i === 0, fallback: p.thumb }))));
   const dots = h("div", { class: "dots" }, photos.map((_, i) => h("i", { class: i === 0 ? "on" : "" })));
   const count = h("span", { class: "count" }, `1 / ${photos.length}`);
   const go = d => track.scrollBy({ left: d * track.clientWidth, behavior: "smooth" });
@@ -494,7 +530,7 @@ function openRecipe(r, opts = {}) {
   const photoBox = h("div", { class: "photo-strip" });
   const drawPhotos = () => {
     photoBox.replaceChildren(...R.photos.map((p, i) => h("div", { class: "pthumb" },
-      mediaImg(p.thumb || p.path, "image/jpeg", { eager: true }),
+      mediaImg(p.path, "image/jpeg", { eager: true, fallback: p.thumb }),
       i === 0 ? h("span", { class: "badge" }, "Cover") : h("button", { class: "mini", title: "Make this the cover", "aria-label": "Make this the cover",
         onclick: () => { R.photos.unshift(R.photos.splice(i, 1)[0]); touch(); drawPhotos(); } }, "★"),
       h("button", { class: "mini x", title: "Remove photo", "aria-label": "Remove photo", onclick: () => { R.photos.splice(i, 1); touch(); drawPhotos(); } }, svg("x")))),
@@ -859,26 +895,33 @@ function openLabelReview(result, onDone) {
 
 /* ---------------- recipe picker: the cookbook in a pop-up, for adding a dish somewhere ---------------- */
 function pickRecipe({ title, onPick, exclude = [], onlyActive = false }) {
-  const st = { q: "", cat: "All" };
+  recipeFilterState();   // loads the remembered view
+  const st = { q: "", cat: "All", sort: "rating", reverse: false };
   const close = () => { scrim.remove(); document.removeEventListener("keydown", esc); };
-  const grid = h("div", { class: "cards picker-cards" });
+  const body = h("div", { class: "drawer-body" });
   const seg = h("div", { class: "seg cats" });
+  const viewBox = h("span", { class: "picker-view" });
+  const pick = r => { close(); onPick(r); };
   const draw = () => {
     seg.replaceChildren(...["All", ...CATS].map(c => h("button", { class: st.cat === c ? "on" : "", onclick: () => { st.cat = c; draw(); } }, c)));
+    viewBox.replaceChildren(viewSwitch(draw));
     const q = st.q.toLowerCase().trim();
-    const list = S.data.recipes.filter(r => r.ingredients.length && (!onlyActive || r.active) && !exclude.includes(r.id) &&
-      (st.cat === "All" || r.category === st.cat) && (!q || r.name.toLowerCase().includes(q) || (r.tags || []).join(" ").toLowerCase().includes(q)))
-      .sort((a, b) => (b.rating || 0) - (a.rating || 0) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    grid.replaceChildren(...(list.length ? list.map(r => simpleCard(r, () => { close(); onPick(r); }))
-      : [h("p", { class: "muted" }, "No recipes match.")]));
+    const list = sortRecipes(S.data.recipes.filter(r => r.ingredients.length && (!onlyActive || r.active) && !exclude.includes(r.id) &&
+      (st.cat === "All" || r.category === st.cat) && (!q || r.name.toLowerCase().includes(q) || (r.tags || []).join(" ").toLowerCase().includes(q))), st);
+    const top = body.scrollTop;
+    if (!list.length) body.replaceChildren(h("p", { class: "muted" }, "No recipes match."));
+    else if (S.recipeView === "advanced") body.replaceChildren(advHead(draw), h("div", { class: "cards adv picker-cards" }, list.map(r => advancedCard(r, pick))));
+    else if (S.recipeView === "list") body.replaceChildren(listTable(list, { onOpen: pick, f: st, redraw: draw }));
+    else body.replaceChildren(h("div", { class: "cards picker-cards" }, list.map(r => simpleCard(r, pick))));
+    body.scrollTop = top;
   };
   const search = h("input", { type: "search", placeholder: "Search recipes", "aria-label": "Search recipes", class: "rsearch",
     oninput: debounce(e => { st.q = e.target.value; draw(); }, 150) });
   const scrim = h("div", { class: "scrim center", onclick: e => { if (e.target === scrim) close(); } },
     h("div", { class: "modal wide", role: "dialog", "aria-modal": "true", "aria-label": title },
       h("div", { class: "drawer-head" }, h("h2", null, title), h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, svg("x"))),
-      h("div", { class: "picker-tools" }, search, seg),
-      h("div", { class: "drawer-body" }, grid)));
+      h("div", { class: "picker-tools" }, search, seg, viewBox),
+      body));
   function esc(e) { if (e.key === "Escape") close(); }
   document.addEventListener("keydown", esc);
   document.body.append(scrim);

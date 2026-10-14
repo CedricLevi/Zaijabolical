@@ -198,9 +198,18 @@ with sync_playwright() as p:
     pg.click(".day >> nth=0 >> .add-dish"); pg.wait_for_selector(".modal.wide .pcard"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/05b-picker.png")
     before = pg.locator(".day >> nth=0 >> .dish").count()
     pg.fill(".picker-tools input", "brown rice"); pg.wait_for_timeout(300)
-    pg.click(".modal.wide .pcard >> nth=0"); pg.wait_for_timeout(800)
+    # the picker has the same Simple / Advanced / List views as the Recipes page
+    pg.click(".picker-tools .viewswitch button:has-text('Advanced')"); pg.wait_for_selector(".modal.wide .acard")
+    assert pg.locator(".modal.wide .adv-head").count() == 1 and pg.locator(".modal.wide .pcard").count() == 0
+    pg.screenshot(path=f"{OUT}/05c-picker-advanced.png")
+    pg.click(".picker-tools .viewswitch button:has-text('List')"); pg.wait_for_selector(".modal.wide table.ltable tr.click")
+    pg.click(".modal.wide .sorter:has-text('Protein')"); pg.wait_for_timeout(200)
+    assert pg.locator(".modal.wide .sorter.on:has-text('Protein')").count() == 1
+    pg.click(".modal.wide tr.click >> nth=0"); pg.wait_for_timeout(800)
     assert pg.locator(".modal.wide").count() == 0
     assert pg.locator(".day >> nth=0 >> .dish").count() >= before
+    pg.click(".day >> nth=0 >> .add-dish"); pg.wait_for_selector(".modal.wide tr.click")   # remembered
+    pg.click(".picker-tools .viewswitch button:has-text('Simple')"); pg.wait_for_selector(".modal.wide .pcard"); pg.keyboard.press("Escape")
 
     # build around + day ideas
     pg.click(".anchors .btn"); pg.wait_for_selector(".modal.wide .pcard")
@@ -423,12 +432,29 @@ with sync_playwright() as p:
     ph.screenshot(path=f"{OUT}/12-phone.png")
     assert ph.inner_text(".panel-head .muted.small") == chosen, "phone shows the same chosen week"
     ph.goto(BASE + "#recipes"); ph.wait_for_timeout(1500); ph.screenshot(path=f"{OUT}/13-phone-recipes.png")
+    # recipe cards show the recipe's main photo (here and in the picker)
+    main_is_shown = """async ([sel, rid]) => { const r = recipeById(rid); const img = document.querySelector(sel);
+      return !!img && img.complete && img.naturalWidth > 0 && img.src === await Z.media.url(r.photos[0].path, 'image/jpeg'); }"""
+    pname = ph.evaluate(f"recipeById('{rid}').name")
+    ph.fill(".rsearch", pname); ph.wait_for_timeout(1500)
+    ph.wait_for_function(f"document.querySelector('.pcard .ph img') && document.querySelector('.pcard .ph img').naturalWidth > 0", timeout=10000)
+    assert ph.evaluate(main_is_shown, [".pcard .ph img", rid]), "simple card shows the main photo"
+    ph.screenshot(path=f"{OUT}/13h-phone-card-photo.png")
     # the photo uploaded on the desktop downloads on the phone
     ph.goto(BASE + "#recipe/" + rid); ph.wait_for_selector(".hero img[src^='blob:']", timeout=10000); ph.wait_for_timeout(400)
     print("phone scrollWidth (recipe)", ph.evaluate("document.documentElement.scrollWidth"))
     ph.screenshot(path=f"{OUT}/13b-phone-recipe.png", full_page=True)
     ph.goto(BASE + "#plan"); ph.wait_for_selector(".add-dish"); ph.click(".add-dish >> nth=0"); ph.wait_for_selector(".modal.wide .pcard"); ph.wait_for_timeout(500)
-    ph.screenshot(path=f"{OUT}/13d-phone-picker.png"); ph.keyboard.press("Escape")
+    ph.screenshot(path=f"{OUT}/13d-phone-picker.png")
+    ph.fill(".picker-tools input", pname); ph.wait_for_timeout(800)
+    ph.wait_for_function("document.querySelector('.modal.wide .pcard .ph img') && document.querySelector('.modal.wide .pcard .ph img').naturalWidth > 0", timeout=10000)
+    assert ph.evaluate(main_is_shown, [".modal.wide .pcard .ph img", rid]), "picker card shows the main photo"
+    ph.click(".picker-tools .viewswitch button:has-text('Advanced')"); ph.wait_for_selector(".modal.wide .acard"); ph.wait_for_timeout(600)
+    assert ph.evaluate("document.querySelector('.modal.wide').scrollWidth <= 390"), "advanced picker fits the phone"
+    ph.screenshot(path=f"{OUT}/13i-phone-picker-advanced.png")
+    ph.click(".picker-tools .viewswitch button:has-text('List')"); ph.wait_for_selector(".modal.wide tr.click"); ph.wait_for_timeout(600)
+    ph.screenshot(path=f"{OUT}/13j-phone-picker-list.png")
+    ph.click(".picker-tools .viewswitch button:has-text('Simple')"); ph.keyboard.press("Escape")
     ph.goto(BASE + "#link"); ph.wait_for_timeout(800); ph.screenshot(path=f"{OUT}/13e-phone-link.png", full_page=True)
     assert ph.evaluate("document.documentElement.scrollWidth") <= 390, "link screen fits the phone"
     ph.goto(BASE + "#recipes"); ph.wait_for_timeout(500)
