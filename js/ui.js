@@ -757,6 +757,84 @@ function planBuild() {
 /* ================================================================
    PANTRY
    ================================================================ */
+/* ---------------- vegan check and versions of an ingredient ---------------- */
+const ingIndex = () => Object.fromEntries(S.data.ingredients.map(x => [x.id, x]));
+const recipeIndex = () => Object.fromEntries(S.data.recipes.map(r => [r.id, r]));
+function veganOf(i, ix = ingIndex(), rx = recipeIndex()) { return Z.cookbook.pantryVegan(i, ix, rx); }
+const VEGAN_LOOK = {
+  yes: ["vg-yes", "check", "Vegan", "You confirmed it's vegan"],
+  likely: ["vg-likely", "leaf", "Looks vegan", "No animal ingredients in its name, description or ingredient list"],
+  check: ["vg-check", "alert", "Check", "Worth checking the package"],
+  no: ["vg-no", "x", "Not vegan", "An animal ingredient was found"],
+};
+function veganBadge(v) {
+  const [cls, icon, label, tip] = VEGAN_LOOK[v.status];
+  return h("span", { class: "tag vg " + cls, title: v.reasons.length ? v.reasons.join("\n") : tip }, svg(icon), label);
+}
+/** the main item and its other versions (e.g. store-bought broth and homemade broth), or [] when there's only one */
+function versionsOf(i) {
+  if (!i) return [];
+  const ix = ingIndex();
+  const main = (i.version_of && ix[i.version_of]) || i;
+  const all = [main, ...S.data.ingredients.filter(x => x.version_of === main.id && x.id !== main.id)];
+  return all.length > 1 ? all : [];
+}
+const versionKind = i => (i.from_recipe ? "Homemade" : i.source === "usda" ? (i.data_type === "Branded" ? "Store-bought (brand)" : "Store-bought (USDA)") : "Store-bought (label)");
+function usageCount(id) { return S.data.recipes.filter(r => r.ingredients.some(l => l.ingredient_id === id)).length; }
+/** pick the main item this is another version of */
+function versionOfField(I, onChange) {
+  const opts = S.data.ingredients.filter(x => x.id !== I.id && !x.version_of && !(I.from_recipe && x.from_recipe === I.from_recipe))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return h("label", { class: "field" }, h("span", null, "Another version of"),
+    h("select", { onchange: e => onChange(e.target.value || null) },
+      h("option", { value: "" }, "— Its own item —"),
+      opts.map(x => h("option", { value: x.id, selected: I.version_of === x.id }, `${x.name} · ${versionKind(x)}`))),
+    h("span", { class: "muted small" }, "Link a homemade and a store-bought version (or two brands) so recipes can switch between them."));
+}
+/** the versions of an item, with a one-tap "use this one in every recipe" */
+function versionsPanel(i) {
+  const vs = versionsOf(i);
+  if (!vs.length) return null;
+  return h("div", { class: "versions-box" }, h("b", null, "Versions"),
+    vs.map(v => {
+      const n = usageCount(v.id), others = vs.filter(o => o.id !== v.id && usageCount(o.id));
+      return h("div", { class: "version-row" + (v.id === i.id ? " me" : "") },
+        h("div", null, h("div", null, v.name, v.id === i.id ? h("span", { class: "muted small" }, " (this one)") : null),
+          h("div", { class: "muted small" }, `${versionKind(v)} · used in ${n} recipe${n === 1 ? "" : "s"}`)),
+        others.length ? h("button", { class: "btn sm", onclick: async () => {
+          const total = others.reduce((a, o) => a + usageCount(o.id), 0);
+          if (!confirm(`Use “${v.name}” instead of ${others.map(o => `“${o.name}”`).join(" and ")} in ${total} recipe${total === 1 ? "" : "s"}?`)) return;
+          let moved = 0;
+          try { for (const o of others) moved += (await api("POST", "/api/ingredients/switch", { from: o.id, to: v.id })).recipes; }
+          catch (e) { toast(e.message, true); }
+          await reload(); render(); document.querySelectorAll(".scrim").forEach(x => x.remove());
+          toast(`${moved} recipe${moved === 1 ? " now uses" : "s now use"} ${v.name}`);
+        } }, "Use in all recipes") : null);
+    }));
+}
+/** vegan status with its reasons, an ingredient-list box and your own yes/no */
+function veganBox(I, { readOnly } = {}) {
+  const box = h("div", { class: "vegan-box" });
+  const draw = () => {
+    const v = veganOf(I);
+    const seg = h("div", { class: "seg sm", role: "radiogroup", "aria-label": "Vegan" });
+    for (const [id, label] of [["", "Automatic"], ["yes", "I checked: vegan"], ["no", "Not vegan"]]) {
+      seg.append(h("button", { type: "button", class: (I.vegan || "") === id ? "on" : "", role: "radio", "aria-checked": (I.vegan || "") === id,
+        onclick: () => { if (id) I.vegan = id; else delete I.vegan; draw(); } }, label));
+    }
+    box.replaceChildren(...[
+      h("div", { class: "row between" }, h("b", null, "Vegan?"), veganBadge(v)),
+      v.reasons.length ? h("ul", { class: "vg-reasons" }, v.reasons.map(r => h("li", null, r))) : null].filter(Boolean),
+      ...(readOnly ? [h("p", { class: "muted small", style: { margin: 0 } }, "Worked out from the recipe's ingredients.")] : [
+        h("label", { class: "field" }, h("span", null, "Ingredient list (from the package)"),
+          h("textarea", { rows: 2, placeholder: "e.g. Water, soybeans, calcium sulfate…", value: I.ingredients_text || "",
+            onchange: e => { I.ingredients_text = e.target.value; draw(); } })),
+        seg]));
+  };
+  draw();
+  return box;
+}
+
 function viewPantry() {
   const root = h("div");
   const s = S.data.settings;
@@ -776,34 +854,56 @@ function viewPantry() {
           S.data.seeded ? "Finish importing starters" : "Import starters"))));
   }
   const q = S.pantryQ.toLowerCase();
-  const kind = S.pantryKind || "all";
+  const ix = ingIndex(), rx = recipeIndex();
+  const vegan = Object.fromEntries(S.data.ingredients.map(i => [i.id, veganOf(i, ix, rx)]));
+  const toCheck = S.data.ingredients.filter(i => ["check", "no"].includes(vegan[i.id].status));
+  let kind = S.pantryKind || "all";
+  if (kind === "vegan" && !toCheck.length) kind = S.pantryKind = "all";
   const nHome = S.data.ingredients.filter(i => i.from_recipe).length;
-  const list = S.data.ingredients.filter(i => (!q || i.name.toLowerCase().includes(q) || (i.usda_description || "").toLowerCase().includes(q)) &&
-    (kind === "all" || (kind === "home") === !!i.from_recipe))
-    .sort((a, b) => !!b.from_recipe - !!a.from_recipe);   // homemade first (otherwise A–Z, as loaded)
+  const shown = S.data.ingredients.filter(i => (!q || i.name.toLowerCase().includes(q) || (i.usda_description || "").toLowerCase().includes(q)) &&
+    (kind === "all" || (kind === "vegan" ? toCheck.includes(i) : (kind === "home") === !!i.from_recipe)));
+  // versions of one item sit together (main first); groups with a homemade item come first, then A–Z
+  const groups = new Map();
+  for (const i of shown) {
+    const main = (i.version_of && ix[i.version_of]) ? i.version_of : i.id;
+    if (!groups.has(main)) groups.set(main, []);
+    groups.get(main).push(i);
+  }
+  const list = [...groups.entries()].map(([main, items]) => items.sort((a, b) => (b.id === main) - (a.id === main)))
+    .sort((a, b) => a.some(i => i.from_recipe) === b.some(i => i.from_recipe) ? 0 : a.some(i => i.from_recipe) ? -1 : 1).flat();
   const usage = {};
   for (const r of S.data.recipes) for (const l of r.ingredients) usage[l.ingredient_id] = (usage[l.ingredient_id] || 0) + 1;
   const kinds = h("div", { class: "seg", role: "tablist", "aria-label": "Show" });
-  for (const [id, label] of [["all", "All"], ["store", "Store-bought"], ["home", `Homemade${nHome ? ` (${nHome})` : ""}`]]) {
+  for (const [id, label] of [["all", "All"], ["store", "Store-bought"], ["home", `Homemade${nHome ? ` (${nHome})` : ""}`],
+    ...(toCheck.length ? [["vegan", `Check vegan (${toCheck.length})`]] : [])]) {
     kinds.append(h("button", { class: kind === id ? "on" : "", role: "tab", "aria-selected": kind === id, onclick: () => { S.pantryKind = id; render(); } }, label));
   }
   root.append(h("div", { class: "toolbar" }, h("input", { type: "search", placeholder: "Search pantry", value: S.pantryQ, "aria-label": "Search pantry",
     oninput: debounce(e => { S.pantryQ = e.target.value; render(); document.querySelector(".toolbar input").focus(); }, 250) }), kinds));
+  const nNo = toCheck.filter(i => vegan[i.id].status === "no").length;
+  if (toCheck.length && kind !== "vegan") {
+    root.append(h("div", { class: "banner vg-banner" + (nNo ? " bad" : "") }, svg("leaf"),
+      h("div", { style: { flex: 1 } }, h("b", null, nNo ? `${nNo} pantry item${nNo === 1 ? " looks" : "s look"} not vegan` : "Some pantry items need a vegan check"),
+        h("div", { class: "small" }, `${toCheck.length} to look at: brand-name items with no ingredient list, or ingredients like vitamin D3 that are sometimes from animals. Open one to see why, and confirm it once you've checked the package.`)),
+      h("button", { class: "btn sm", onclick: () => { S.pantryKind = "vegan"; render(); } }, "Review")));
+  }
   if (!S.data.ingredients.length) {
     root.append(h("div", { class: "empty" }, h("h2", null, "The pantry is empty"),
       h("p", null, "Import the starters above, or add ingredients one by one from USDA or a nutrition label.")));
     return root;
   }
   const tbl = h("table", { class: "table" },
-    h("thead", null, h("tr", null, ["Ingredient", "Aisle", "Source", "kcal", "Protein", "Used in"].map(t => h("th", null, t)))),
-    h("tbody", null, list.map(i => h("tr", { class: "click" + (i.from_recipe ? " homemade" : ""), onclick: () => openIngredient(i) },
-      h("td", null, h("div", { class: "row tight nowrap", style: { fontWeight: 500 } }, i.from_recipe ? svg("pot", "home-ic") : null, i.name),
+    h("thead", null, h("tr", null, ["Ingredient", "Vegan", "Aisle", "Source", "kcal", "Protein", "Used in"].map(t => h("th", { class: ["Aisle", "Used in"].includes(t) ? "hide-sm" : null }, t)))),
+    h("tbody", null, list.map(i => h("tr", { class: "click" + (i.from_recipe ? " homemade" : "") + (i.version_of && ix[i.version_of] && groups.has(i.version_of) ? " version" : ""), onclick: () => openIngredient(i) },
+      h("td", null, h("div", { class: "row tight nowrap", style: { fontWeight: 500 } }, i.version_of && ix[i.version_of] ? h("span", { class: "ver-mark", title: `Another version of ${ix[i.version_of].name}` }, "↳") : null,
+        i.from_recipe ? svg("pot", "home-ic") : null, i.name, versionsOf(i).length && !i.version_of ? h("span", { class: "tag ver-tag" }, `${versionsOf(i).length} versions`) : null),
         i.from_recipe ? h("div", { class: "muted small" }, homemadeLine(i)) : i.usda_description ? h("div", { class: "muted small" }, i.usda_description) : null),
-      h("td", { class: "muted" }, i.aisle),
+      h("td", null, veganBadge(vegan[i.id])),
+      h("td", { class: "muted hide-sm" }, i.aisle),
       h("td", null, i.from_recipe ? h("span", { class: "tag homemade" }, "Homemade") : h("span", { class: "tag" }, i.source === "usda" ? "USDA" : "Label"),
         i.verify ? h("span", { class: "tag warn", title: "Brands vary (fortification especially). Compare with your package label." }, "check label") : null),
       h("td", null, fmt(i.nutrients.kcal)), h("td", null, fmt(i.nutrients.protein, "g")),
-      h("td", { class: "muted" }, usage[i.id] ? `${usage[i.id]} recipe${usage[i.id] > 1 ? "s" : ""}` : "–")))));
+      h("td", { class: "muted hide-sm" }, usage[i.id] ? `${usage[i.id]} recipe${usage[i.id] > 1 ? "s" : ""}` : "–")))));
   if (kind === "home" && !list.length) {
     root.append(h("div", { class: "empty" }, h("h2", null, "No homemade items yet"),
       h("p", null, "Turn a recipe like a broth, sauce or dressing into a pantry item, then use it in other recipes or log it in the Tracker. Its nutrients come from the recipe."),
@@ -829,7 +929,10 @@ function openHomemade(r, onDone) {
   const ingL = Object.fromEntries(S.data.ingredients.map(i => [i.id, i]));
   const ex = S.data.ingredients.find(i => i.from_recipe === r.id);
   const guess = Z.recipeYieldGuess(r, ingL);
-  const st = { name: ex ? ex.name : r.name, yield_g: (ex && ex.yield_g) || guess || "", aisle: ex ? ex.aisle : "Homemade" };
+  // guess which store-bought item this is a homemade version of ("Vegetable broth" for a broth recipe)
+  const guessMain = !ex && typeof matchIngredient === "function" ? matchIngredient(r.name) : null;
+  const st = { name: ex ? ex.name : r.name, yield_g: (ex && ex.yield_g) || guess || "", aisle: ex ? ex.aisle : "Homemade",
+    version_of: ex ? ex.version_of || null : (guessMain && !guessMain.from_recipe ? (guessMain.version_of || guessMain.id) : null) };
   const preview = h("div", { class: "home-preview" });
   const drawPreview = () => {
     const d = Z.recipeAsIngredient(r, ingL, st.yield_g);
@@ -846,7 +949,7 @@ function openHomemade(r, onDone) {
   const save = h("button", { class: "btn primary", onclick: async () => {
     save.disabled = true;
     try {
-      const ing = await api("POST", "/api/ingredients/from-recipe", { recipe_id: r.id, name: st.name, yield_g: st.yield_g, aisle: st.aisle });
+      const ing = await api("POST", "/api/ingredients/from-recipe", { recipe_id: r.id, name: st.name, yield_g: st.yield_g, aisle: st.aisle, version_of: st.version_of });
       await reload(); close(); render();
       toast(ex ? `${ing.name} updated` : `${ing.name} is in the pantry`);
       if (onDone) onDone(ing);
@@ -867,6 +970,9 @@ function openHomemade(r, onDone) {
         fld("Aisle", h("select", { onchange: e => { st.aisle = e.target.value; } },
           Z.AISLES.map(a => h("option", { selected: a === st.aisle }, a)))),
         h("div", { class: "field" }, h("span", null, "Nutrients"), preview),
+        versionOfField({ id: ex && ex.id, from_recipe: r.id, version_of: st.version_of }, v => { st.version_of = v; }),
+        ex ? versionsPanel(ex) : null,
+        veganBox(ex || { name: st.name, from_recipe: r.id, id: "new-" + r.id }, { readOnly: true }),
         h("div", { class: "row", style: { justifyContent: "flex-end", marginTop: "8px" } },
           ex ? h("button", { class: "btn ghost danger", style: { marginRight: "auto" }, onclick: async () => {
             if (!confirm(`Remove “${ex.name}” from the pantry? The recipe stays.`)) return;
@@ -897,7 +1003,7 @@ function openAddIngredient(query, onDone) {
   const draw = () => {
     tabs.replaceChildren(
       h("button", { class: tab === "usda" ? "on" : "", onclick: () => { tab = "usda"; draw(); } }, "Search USDA"),
-      h("button", { class: tab === "label" ? "on" : "", onclick: () => { tab = "label"; draw(); } }, "From a nutrition label"),
+      h("button", { class: tab === "label" ? "on" : "", onclick: () => { tab = "label"; draw(); } }, "From a label"),
       h("button", { class: tab === "recipe" ? "on" : "", onclick: () => { tab = "recipe"; draw(); } }, "From a recipe"));
     if (tab === "recipe") {
       body.replaceChildren(h("div", { class: "empty", style: { padding: "24px 12px" } }, svg("pot", "big-ic"),
@@ -916,7 +1022,8 @@ function openAddIngredient(query, onDone) {
   const done = ing => { close(); if (onDone) onDone(ing); };
   const scrim = h("div", { class: "scrim center", onclick: e => { if (e.target === scrim) close(); } },
     h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": "Add ingredient" },
-      h("div", { class: "drawer-head" }, h("h2", null, "Add ingredient"), tabs, h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, svg("x"))),
+      h("div", { class: "drawer-head" }, h("h2", null, "Add ingredient"), h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, svg("x"))),
+      h("div", { class: "add-tabs" }, tabs),
       body));
   document.body.append(scrim);
   draw();
@@ -936,8 +1043,11 @@ function usdaSearchPane(query, done) {
     try {
       const res = await api("GET", `/api/usda/search?q=${encodeURIComponent(input.value)}&types=${encodeURIComponent(type)}`);
       if (!res.length) { results.replaceChildren(h("p", { class: "muted" }, "No matches. Try fewer words, or switch to brand-name products.")); return; }
-      results.replaceChildren(...res.map(f => h("div", { class: "usda-item" },
-        h("div", null, h("div", { class: "d" }, f.description, f.brand ? h("span", { class: "muted" }, ` · ${f.brand}`) : null),
+      const asItem = f => ({ name: f.description, usda_description: f.description, brand: f.brand, ingredients_text: f.ingredients, data_type: f.data_type, source: "usda" });
+      const rank = { yes: 0, likely: 0, check: 1, no: 2 };
+      const withV = res.map(f => ({ f, v: veganOf(asItem(f)) })).sort((a, b) => rank[a.v.status] - rank[b.v.status]);
+      results.replaceChildren(...withV.map(({ f, v }) => h("div", { class: "usda-item" + (v.status === "no" ? " not-vegan" : "") },
+        h("div", null, h("div", { class: "d" }, f.description, f.brand ? h("span", { class: "muted" }, ` · ${f.brand}`) : null, " ", veganBadge(v)),
           h("div", { class: "m" }, `${f.data_type} · per 100 g: ${fmt(f.nutrients.kcal)} kcal, ${fmt(f.nutrients.protein)} g protein · ${f.n_nutrients} nutrients`)),
         h("button", { class: "btn sm", onclick: () => pickUsda(f) }, "Use this"))));
     } catch (e) { results.replaceChildren(h("div", { class: "banner" }, svg("alert"), e.message)); }
@@ -948,7 +1058,8 @@ function usdaSearchPane(query, done) {
     const nice = f.description.split(",").slice(0, 2).join(",").trim();
     wrap.replaceChildren(ingredientForm({
       name: nice, source: "usda", fdc_id: f.fdc_id, usda_description: f.description + (f.brand ? ` (${f.brand})` : ""),
-      data_type: f.data_type, nutrients: { ...f.nutrients, ...(detail.nutrients || {}) },
+      data_type: f.data_type, nutrients: { ...f.nutrients, ...(detail.nutrients || {}) }, brand: f.brand || undefined,
+      ingredients_text: detail.ingredients || f.ingredients || undefined,
       portions: detail.portions || [], aisle: "Other", verify: f.data_type === "Branded",
     }, done));
   };
@@ -1009,6 +1120,9 @@ function ingredientForm(I, done, { labelMode, basis: basis0 } = {}) {
     h("div", { class: "grid2" },
       fld("Name", h("input", { type: "text", value: I.name || "", oninput: e => { I.name = e.target.value; } })),
       fld("Aisle", h("select", { onchange: e => { I.aisle = e.target.value; } }, AISLES.map(a => h("option", { selected: I.aisle === a }, a))))),
+    veganBox(I),
+    versionOfField(I, v => { I.version_of = v; }),
+    I.id ? versionsPanel(I) : null,
     h("div", { class: "panel-head", style: { marginTop: "18px" } }, h("h2", null, "Portion sizes"),
       h("button", { class: "btn sm", onclick: () => { I.portions.push({ label: "", grams: "" }); drawPortions(); } }, svg("plus"), "Add portion")),
     h("p", { class: "muted small" }, "Lets recipes say “2 cups” instead of grams."),

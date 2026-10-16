@@ -913,3 +913,37 @@ tr.homemade { background: color-mix(in srgb, var(--acorn) 6%, transparent); }
   .nut-cond > select:nth-child(4) { grid-column: 1 / 3; }
   .picker-nut:not(:empty) { padding: 10px 14px 0; }
 }
+
+/* vegan check */
+.tag.vg { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.tag.vg svg { width: 12px; height: 12px; }
+.tag.vg-yes { color: var(--leaf); border-color: color-mix(in srgb, var(--leaf) 55%, var(--line)); background: color-mix(in srgb, var(--leaf) 12%, var(--surface)); }
+.tag.vg-likely { color: var(--muted); }
+.tag.vg-check { color: #9a6a00; border-color: color-mix(in srgb, var(--squash) 60%, var(--line)); background: color-mix(in srgb, var(--squash) 14%, var(--surface)); }
+.tag.vg-no { color: var(--tomato); border-color: color-mix(in srgb, var(--tomato) 55%, var(--line)); background: color-mix(in srgb, var(--tomato) 10%, var(--surface)); }
+:root[data-theme="dark"] .tag.vg-check { color: var(--squash); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tag.vg-check { color: var(--squash); } }
+.vg-banner { margin-bottom: 14px; }
+.vg-banner svg { color: var(--leaf); }
+.vg-banner.bad svg { color: var(--tomato); }
+.vegan-box, .versions-box { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; margin: 12px 0; display: flex; flex-direction: column; gap: 8px; }
+.vg-reasons { margin: 0; padding-left: 18px; font-size: 13.5px; color: var(--muted); }
+.vegan-box textarea { min-height: 56px; }
+.seg.sm button { font-size: 13px; padding: 5px 10px; }
+.usda-item.not-vegan { opacity: .6; }
+/* versions of an ingredient */
+.version-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
+.version-row.me { font-weight: 500; }
+tr.version td:first-child { padding-left: 26px; }
+.ver-mark { color: var(--muted); }
+.tag.ver-tag { font-size: 11px; font-weight: 500; }
+.ver-sel { margin-top: 4px; padding: 3px 6px; font-size: 12.5px; width: 100%; }
+.tag.sm { font-size: 11px; padding: 0 6px; margin-left: 6px; }
+/* add-ingredient tabs get their own row so all three fit on a phone */
+.add-tabs { padding: 10px 22px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.add-tabs .seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+@media (max-width: 640px) {
+  .add-tabs { padding: 8px 12px; }
+  .add-tabs .seg { display: flex; width: 100%; }
+  .add-tabs .seg button { flex: 1 1 auto; padding: 7px 8px; font-size: 13.5px; white-space: nowrap; }
+}

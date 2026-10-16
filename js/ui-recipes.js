@@ -436,6 +436,18 @@ function viewRecipe(id) {
       try { await api("PATCH", `/api/recipes/${r.id}`, { rating: v }); await reload(); render(); toast(v ? `Rated ${v} star${v > 1 ? "s" : ""}` : "Rating cleared"); }
       catch (e) { toast(e.message, true); }
     } }), chips));
+  {
+    const ix = ingIndex(), rx = recipeIndex();
+    const bad = [...new Set(r.ingredients.map(l => ix[l.ingredient_id]).filter(Boolean))].map(i => [i, veganOf(i, ix, rx)])
+      .filter(([, v]) => v.status === "no" || v.status === "check");
+    if (bad.length) {
+      const no = bad.filter(([, v]) => v.status === "no");
+      root.append(h("div", { class: "banner vg-banner" + (no.length ? " bad" : "") }, svg("leaf"),
+        h("div", null, h("b", null, no.length ? "Not vegan as linked: " : "Check these are vegan: "),
+          bad.map(([i, v], k) => h("span", null, k ? ", " : "", h("button", { class: "linklike", onclick: () => openIngredient(i) }, i.name),
+            v.reasons[0] ? h("span", { class: "muted" }, ` (${v.reasons[0]})`) : null)))));
+    }
+  }
   if (r.nutrition.unlinked) root.append(h("div", { class: "banner" }, svg("alert"),
     h("div", null, `${r.nutrition.unlinked} ingredient${r.nutrition.unlinked > 1 ? "s aren't" : " isn't"} linked to the pantry yet, so the nutrition leaves ${r.nutrition.unlinked > 1 ? "them" : "it"} out. `,
       h("a", { class: "linklike", href: "#link" }, "Link ingredients"))));
@@ -447,7 +459,8 @@ function viewRecipe(id) {
     r.ingredients.length ? h("ul", { class: "ingl" }, r.ingredients.map(l => {
       const ing = ingMapLocal[l.ingredient_id];
       return h("li", { class: ing ? "" : "unlinked" }, h("b", null, amountText(l, ing)),
-        h("span", null, ing ? ing.name : l.name, l.note ? h("span", { class: "muted" }, ` · ${l.note}`) : null,
+        h("span", null, ing ? ing.name : l.name, ing && ing.from_recipe ? h("span", { class: "tag homemade sm" }, "homemade") : null,
+          l.note ? h("span", { class: "muted" }, ` · ${l.note}`) : null,
           ing ? null : l.ignore ? h("span", { class: "muted small" }, " (no nutrition)") : h("span", { class: "conf", title: "Not linked to a pantry ingredient" }, "not linked")));
     })) : h("p", { class: "muted" }, "No ingredients yet.")));
   const steps = stepLines(r.steps);
@@ -656,7 +669,18 @@ function openRecipe(r, opts = {}) {
         const [amt, unit] = mapUnit(line.amount, line.unit, picked);
         line.ingredient_id = picked.id; line.amount = amt; line.unit = unit; delete line.name; line._flag = "matched";
         touch(); drawLines(); refresh();
-      }), flag),
+      }), flag, (() => {
+        const vs = versionsOf(ing);
+        if (!vs.length) return null;
+        return h("select", { class: "ver-sel", "aria-label": "Version", title: "Switch between versions of this ingredient",
+          onchange: e => {
+            const to = ingById(e.target.value);
+            if (!to || to.id === ing.id) return;
+            if (to.from_recipe && to.from_recipe === R.id) { toast("That version is made from this recipe.", true); e.target.value = ing.id; return; }
+            Object.assign(line, Z.switchUnits(line.amount, line.unit, ing, to), { ingredient_id: to.id });
+            touch(); drawLines(); refresh();
+          } }, vs.map(v => h("option", { value: v.id, selected: v.id === ing.id }, `${versionKind(v)}${v.name !== ing.name ? ` · ${v.name}` : ""}`)));
+      })()),
       h("input", { type: "number", step: "any", min: 0, value: line.amount ?? "", "aria-label": "Amount", oninput: e => { line.amount = e.target.value === "" ? null : +e.target.value; touch(); refresh(); } }),
       unitEl,
       h("input", { type: "text", class: "note", value: line.note || "", placeholder: "diced…", "aria-label": "Note", oninput: e => { line.note = e.target.value; touch(); } }),

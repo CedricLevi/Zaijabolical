@@ -428,7 +428,8 @@ function viewLink() {
       try {
         const res = await api("GET", `/api/usda/search?q=${encodeURIComponent(g.name)}&types=${encodeURIComponent("Foundation,SR Legacy")}`);
         const want = tokens(g.name);
-        const scored = res.slice(0, 8).map(f => {
+        const vegan = f => veganOf({ name: f.description, usda_description: f.description, brand: f.brand, ingredients_text: f.ingredients, data_type: f.data_type, source: "usda" }).status !== "no";
+        const scored = res.slice(0, 8).filter(vegan).map(f => {
           const t = tokens(f.description);
           const hit = want.filter(w => t.some(x => x.startsWith(w) || w.startsWith(x))).length;
           return { f, score: hit / Math.max(1, want.length) - 0.03 * t.length + (/\braw\b/i.test(f.description) ? 0.05 : 0) + (f.data_type === "Foundation" ? 0.04 : 0) };
@@ -452,6 +453,7 @@ async function addFromUsda(g, f, quiet) {
   const ing = await api("POST", "/api/ingredients", {
     name: titleCase(g.name), source: "usda", fdc_id: f.fdc_id, usda_description: f.description, data_type: f.data_type,
     nutrients: { ...f.nutrients, ...(detail.nutrients || {}) }, portions: detail.portions || [], aisle: guessAisle(g.name), verify: f.data_type === "Branded",
+    ingredients_text: detail.ingredients || f.ingredients || undefined, brand: f.brand || undefined,
   });
   await reload();
   await applyLink([g.key], S.data.ingredients.find(i => i.id === ing.id) || ing);
@@ -491,9 +493,11 @@ function choosePantry(g) {
       return { i, s: (i.name.toLowerCase().includes(q) ? 2 : 0) + hit / Math.max(1, want.length) };
     }).filter(x => x.s > 0 || !q).sort((a, b) => b.s - a.s || a.i.name.localeCompare(b.i.name)).slice(0, 40);
     results.replaceChildren(...scored.map(({ i }) => h("button", { class: "pick-item", onclick: async () => { close(); await applyLink([g.key], i); toast(`Linked to ${i.name}`); render(); } },
-      h("b", null, i.name), h("span", { class: "muted small" }, i.aisle))),
+      h("b", null, i.name), h("span", { class: "row tight" }, i.from_recipe ? h("span", { class: "tag homemade" }, "Homemade") : null, veganBadge(veganOf(i))))),
       h("button", { class: "pick-item new", onclick: () => { close(); openAddIngredient(input.value.trim(), async ing => { if (ing) { await applyLink([g.key], ing); toast(`Linked to ${ing.name}`); render(); } }); } },
-        svg("plus"), `Add “${input.value.trim() || g.name}” to the pantry (USDA or label)`));
+        svg("plus"), `Add “${input.value.trim() || g.name}” to the pantry (USDA or label)`),
+      h("button", { class: "pick-item new", onclick: () => { close(); chooseHomemade(async ing => { if (ing) { await applyLink([g.key], ing); toast(`Linked to ${ing.name}`); render(); } }); } },
+        svg("pot"), "Use one of your recipes (homemade)"));
   };
   const m = h("div", { class: "scrim center", onclick: e => { if (e.target === m) close(); } },
     h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": "Link " + g.name },

@@ -319,7 +319,7 @@ with sync_playwright() as p:
 
     # scan a nutrition label from the pantry
     pg.goto(BASE + "#pantry"); pg.wait_for_timeout(300)
-    pg.click(".page-head >> text=Add ingredient"); pg.click("text=From a nutrition label"); pg.click("text=Scan the label")
+    pg.click(".page-head >> text=Add ingredient"); pg.click(".add-tabs >> text=From a label"); pg.click("text=Scan the label")
     pg.set_input_files(".scan-pick label:nth-child(2) input", PHOTO)
     pg.click(".modal .drawer-foot .btn.primary"); pg.wait_for_selector(".modal h2:text('Check the label')", timeout=15000); pg.wait_for_timeout(300)
     pg.screenshot(path=f"{OUT}/16-label-review.png")
@@ -426,6 +426,48 @@ with sync_playwright() as p:
     pg.goto(BASE + "#recipe/" + src); pg.wait_for_selector(".detail-bar")
     assert pg.locator(".detail-bar .btn.in-pantry").count() == 1
 
+    # vegan check: a brand-name item with whey is flagged, shown for review, and you can confirm items yourself
+    pg.evaluate("""async () => { await Z.api.request('POST', '/api/ingredients', { name: 'Protein bar', source: 'usda', data_type: 'Branded',
+      usda_description: 'PROTEIN BAR (Acme)', ingredients_text: 'Soy protein isolate, whey protein concentrate, sugar', nutrients: { kcal: 380, protein: 30 } }); }""")
+    pg.evaluate("reload()"); pg.wait_for_timeout(200)
+    pg.goto(BASE + "#pantry"); pg.wait_for_selector("table.table")
+    assert pg.locator(".vg-banner.bad").count() == 1 and pg.locator("tr:has-text('Protein bar') .vg-no").count() == 1
+    pg.click(".vg-banner >> text=Review"); pg.wait_for_timeout(200)
+    assert pg.locator("tbody tr:has-text('Protein bar')").count() == 1 and pg.locator("tbody .vg-likely").count() == 0
+    pg.screenshot(path=f"{OUT}/19f-vegan-review.png", full_page=True)
+    pg.click("tbody tr:has-text('Protein bar')"); pg.wait_for_selector(".vegan-box")
+    assert "whey" in pg.inner_text(".vegan-box")
+    pg.keyboard.press("Escape"); pg.locator(".scrim").evaluate_all("els => els.forEach(e => e.remove())")
+    pg.click(".toolbar .seg >> text=All"); pg.wait_for_timeout(200)
+    soy = "tbody tr:has-text('Soy milk, unsweetened')"
+    pg.click(soy); pg.wait_for_selector(".vegan-box")
+    pg.click(".vegan-box button:has-text('I checked')"); pg.wait_for_timeout(100)
+    pg.click(".modal >> text=Save ingredient"); pg.wait_for_timeout(600)
+    assert pg.locator(soy + " .vg-yes").count() == 1
+    assert pg.evaluate("Z.store.S.doc.ingredients.find(i => i.name === 'Soy milk, unsweetened').vegan") == "yes"
+    # versions: the homemade rice is another version of the store-bought one; recipes can switch between them
+    pg.click("tr.homemade"); pg.wait_for_selector(".home-form")
+    store_rice = pg.evaluate("Z.store.S.doc.ingredients.find(i => i.name.startsWith('Brown rice')).id")
+    pg.select_option(".home-form .field:has-text('Another version of') select", store_rice); pg.wait_for_timeout(100)
+    pg.click(".home-form >> text=Save"); pg.wait_for_timeout(600)
+    assert pg.evaluate("Z.store.S.doc.ingredients.find(i => i.from_recipe).version_of") == store_rice
+    assert pg.locator("tr.version.homemade").count() == 1 and pg.locator(".ver-tag").count() == 1
+    pg.screenshot(path=f"{OUT}/19g-pantry-versions.png")
+    pg.click("tr.homemade"); pg.wait_for_selector(".versions-box")
+    users = pg.evaluate(f"Z.store.S.doc.recipes.filter(r => r.ingredients.some(l => l.ingredient_id === '{store_rice}')).map(r => r.id)")
+    pg.once("dialog", lambda dlg: dlg.accept())
+    pg.click(".versions-box .version-row.me >> text=Use in all recipes"); pg.wait_for_timeout(800)
+    home_id = pg.evaluate("Z.store.S.doc.ingredients.find(i => i.from_recipe).id")
+    left = pg.evaluate(f"Z.store.S.doc.recipes.filter(r => r.ingredients.some(l => l.ingredient_id === '{store_rice}')).map(r => r.id)")
+    assert left == [src], ("only its own recipe keeps the store-bought rice", left, users)
+    other = [r for r in users if r != src][0]
+    assert pg.evaluate(f"Z.store.S.doc.recipes.find(r => r.id === '{other}').ingredients.some(l => l.ingredient_id === '{home_id}')")
+    # and the editor offers the switch back on that line
+    pg.goto(BASE + "#recipe/" + other); pg.wait_for_selector(".detail-bar"); pg.click(".detail-bar >> text=Edit"); pg.wait_for_selector(".ver-sel")
+    pg.select_option(".ver-sel", store_rice); pg.wait_for_timeout(200)
+    pg.click(".drawer-foot .btn.primary"); pg.wait_for_timeout(800)
+    assert pg.evaluate(f"Z.store.S.doc.recipes.find(r => r.id === '{other}').ingredients.some(l => l.ingredient_id === '{store_rice}')")
+
     # prep + settings
     pg.goto(BASE + "#prep"); pg.wait_for_timeout(500); pg.screenshot(path=f"{OUT}/10-prep.png", full_page=True)
     assert pg.locator(".prep-tl .lane").count() >= 2 and "start to finish" in pg.inner_text(".prep-tl")
@@ -516,6 +558,16 @@ with sync_playwright() as p:
     ph.screenshot(path=f"{OUT}/13j-phone-picker-list.png")
     ph.click(".picker-tools .viewswitch button:has-text('Simple')"); ph.keyboard.press("Escape")
     ph.goto(BASE + "#link"); ph.wait_for_timeout(800); ph.screenshot(path=f"{OUT}/13e-phone-link.png", full_page=True)
+    # the add-ingredient tabs (USDA, label, recipe) all fit on the phone
+    ph.click(".link-row >> text=Choose… >> nth=0"); ph.wait_for_selector(".pick-item.new")
+    assert ph.locator(".pick-item.new:has-text('homemade')").count() == 1
+    ph.click(".pick-item.new >> nth=0"); ph.wait_for_selector(".add-tabs"); ph.wait_for_timeout(300)
+    for t in ("Search USDA", "From a label", "From a recipe"):
+        bb = ph.locator(f".add-tabs button:has-text('{t}')").bounding_box()
+        assert bb and bb["x"] >= 0 and bb["x"] + bb["width"] <= 390, (t, bb)
+    ph.screenshot(path=f"{OUT}/13k-phone-add-tabs.png")
+    ph.click(".add-tabs >> text=From a recipe"); ph.wait_for_selector(".empty:has-text('Homemade')")
+    ph.locator(".scrim").evaluate_all("els => els.forEach(e => e.remove())")
     assert ph.evaluate("document.documentElement.scrollWidth") <= 390, "link screen fits the phone"
     ph.goto(BASE + "#recipes"); ph.wait_for_timeout(500)
     ph.click(".page-head .btn:has(svg) >> nth=0"); ph.set_input_files(".modal input[type=file]", os.path.join(ROOT, "tests", "fixtures", "books", "tagged.epub"))

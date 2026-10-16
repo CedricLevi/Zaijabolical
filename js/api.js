@@ -85,7 +85,7 @@
     return (res.foods || []).map(f => {
       const nut = Z.parseUsdaNutrients(f.foodNutrients);
       return { fdc_id: f.fdcId, description: f.description || "", brand: f.brandName || f.brandOwner || null,
-        data_type: f.dataType, nutrients: nut, n_nutrients: Object.keys(nut).length };
+        data_type: f.dataType, nutrients: nut, n_nutrients: Object.keys(nut).length, ingredients: String(f.ingredients || "").slice(0, 4000) };
     });
   }
   function portionLabel(p) {
@@ -107,9 +107,14 @@
       portions.push({ label: `${f.householdServingFullText || "serving"} (label serving)`, grams: Number(f.servingSize) });
     const seen = new Set();
     return { fdc_id: f.fdcId, description: f.description || "", brand: f.brandName || f.brandOwner || null, data_type: f.dataType,
+      ingredients: String(f.ingredients || "").slice(0, 4000),
       nutrients: Z.parseUsdaNutrients(f.foodNutrients),
       portions: portions.filter(p => !seen.has(p.label.toLowerCase()) && seen.add(p.label.toLowerCase())).slice(0, 12) };
   }
+
+  /** a USDA search result that's clearly not vegan (meat, dairy, eggs, honey… in its name or ingredient list) */
+  const isNotVegan = f => !!Z.cookbook && Z.cookbook.pantryVegan({ name: f.description, usda_description: f.description, brand: f.brand,
+    ingredients_text: f.ingredients, data_type: f.data_type, source: "usda" }).status === "no";
 
   // ---------------- starter import ----------------
   const pantryByKey = () => Object.fromEntries(Z.STARTER_PANTRY.map(p => [p.key, p]));
@@ -122,7 +127,7 @@
     let candidates = [], chosen = null;
     for (const t of item.types) {
       const results = await usdaSearch(item.query, [t], 12);
-      results.forEach(r => { r.fits = fits(r.description, item); candidates.push(r); });
+      results.forEach(r => { r.fits = fits(r.description, item) && !isNotVegan(r); candidates.push(r); });
       const good = results.filter(r => r.fits);
       if (good.length && !chosen) { chosen = good.slice(0, 5).reduce((a, b) => (b.n_nutrients > a.n_nutrients ? b : a)); break; }
     }
@@ -227,6 +232,17 @@
     i.aisle = i.aisle || "Other"; i.source = i.source || "manual"; i.verify = !!i.verify;
     if (i.from_recipe) { i.source = "recipe"; i.yield_g = Math.max(1, Number(i.yield_g) || 0) || null; i.verify = false; }
     else { delete i.from_recipe; delete i.yield_g; }
+    // vegan: "yes" / "no" when you've checked it yourself; otherwise worked out from its name and ingredient list
+    if (i.vegan !== "yes" && i.vegan !== "no") delete i.vegan;
+    i.ingredients_text = String(i.ingredients_text || "").trim().slice(0, 4000);
+    if (!i.ingredients_text) delete i.ingredients_text;
+    // another version of a pantry item (e.g. homemade broth and store-bought broth); always points at the main one
+    if (i.version_of) {
+      const target = doc().ingredients.find(x => x.id === i.version_of);
+      i.version_of = target ? (target.version_of && target.version_of !== i.id ? target.version_of : target.id) : null;
+      if (i.version_of === i.id) i.version_of = null;
+    }
+    if (!i.version_of) delete i.version_of;
     return i;
   }
 
@@ -254,6 +270,21 @@
   const withRefresh = rec => { refreshHomemade(); return clone(ingMap()[rec.id] || rec); };
   route("POST", "/api/ingredients", (p, body) => withRefresh(store().upsert("ingredients", cleanIngredient(body))));
   route("PUT", "/api/ingredients/:id", (p, body) => withRefresh(store().upsert("ingredients", cleanIngredient({ ...body, id: p.id }))));
+  /** use one version of an ingredient instead of another in every recipe */
+  route("POST", "/api/ingredients/switch", (p, body) => {
+    const ing = ingMap(), from = ing[body.from], to = ing[body.to];
+    if (!from || !to) throw new ApiError("That ingredient isn't in the pantry any more", 404);
+    let n = 0;
+    for (const r of doc().recipes) {
+      if (!(r.ingredients || []).some(l => l.ingredient_id === from.id)) continue;
+      if (to.from_recipe && madeFrom(to.id).has(r.id)) continue;   // never inside its own recipe
+      const next = clone(r);
+      next.ingredients = next.ingredients.map(l => (l.ingredient_id === from.id ? { ...l, ingredient_id: to.id, ...Z.switchUnits(l.amount, l.unit, from, to) } : l));
+      store().upsert("recipes", next); n++;
+    }
+    refreshHomemade();
+    return { recipes: n };
+  });
   /** make a recipe into a pantry item (or update the one already made from it) */
   route("POST", "/api/ingredients/from-recipe", (p, body) => {
     const r = recipeMap()[body.recipe_id];
@@ -263,7 +294,7 @@
     if (!(yieldG > 0)) throw new ApiError("Enter about how much the whole batch weighs");
     const rec = store().upsert("ingredients", cleanIngredient({ ...(ex ? clone(ex) : { nutrients: {}, portions: [] }),
       name: String(body.name || (ex && ex.name) || r.name).trim(), aisle: body.aisle || (ex && ex.aisle) || "Homemade",
-      from_recipe: r.id, yield_g: yieldG }));
+      from_recipe: r.id, yield_g: yieldG, ...("version_of" in body ? { version_of: body.version_of || null } : {}) }));
     return withRefresh(rec);
   });
   route("DELETE", "/api/ingredients/:id", p => {

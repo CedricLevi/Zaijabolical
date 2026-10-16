@@ -108,7 +108,11 @@
     "crab", "lobster", "scallops?", "clams?", "mussels?", "oysters?", "squid", "octopus", "gelatin(?:e)?", "honey", "eggs?", "egg yolks?",
     "egg whites?", "butter", "buttermilk", "ghee", "cream", "heavy cream", "sour cream", "cream cheese", "milk", "whole milk", "cheese",
     "parmesan", "parmigiano", "pecorino", "mozzarella", "cheddar", "feta", "ricotta", "gruy[eè]re", "brie", "yogh?urt", "whey", "casein",
-    "fish sauce", "oyster sauce", "worcestershire", "bone broth", "chicken (?:stock|broth)", "beef (?:stock|broth)", "mayonnaise", "mayo"];
+    "fish sauce", "oyster sauce", "worcestershire", "bone broth", "chicken (?:stock|broth)", "beef (?:stock|broth)", "mayonnaise", "mayo",
+    // words that turn up on package ingredient lists
+    "lactose", "caseinates?", "sodium caseinate", "milk (?:powder|solids|fat|protein)", "nonfat (?:dry )?milk", "skim milk", "butterfat", "butter ?oil",
+    "albumen", "albumin", "egg (?:powder|albumen)", "carmine", "cochineal", "shellac", "confectioner'?s glaze", "lanolin", "isinglass", "beeswax",
+    "royal jelly", "tallow", "suet", "collagen", "fish oil", "anchovy paste", "bonito", "dashi"];
   const VEGAN_PREFIX = /\b(vegan|plant[- ]based|non[- ]?dairy|dairy[- ]free|egg[- ]free|soy|almond|oat|coconut|cashew|rice|hemp|flax|chia|pea|nut|vegetable|veggie|mushroom|no[- ]chicken|no[- ]beef|meatless|faux|mock|imitation|vegetarian|seitan|tofu|jackfruit|sunflower|macadamia|hazelnut|pistachio|banana|apple|aquafaba|"|')\s*$/i;
   const VEGAN_WORDS = /\b(eggplants?|butternut|peanut butter|almond butter|cashew butter|nut butter|seed butter|sunflower butter|cocoa butter|apple butter|pumpkin butter|shea butter|butter (beans?|lettuce)|cream of tartar|coconut (milk|cream|butter|yogh?urt)|cream(ed|y)? corn|ice cream maker|egg replacer|flax eggs?|chia eggs?|cheesecloth|creamy|eggless|milk thistle|milkweed|honeydew|honeycrisp|hen[- ]of[- ]the[- ]woods|chicken[- ]of[- ]the[- ]woods|fish[- ]free|beefsteak tomato(es)?|beefsteak|oyster mushrooms?|king oyster|lion'?s mane|nutritional yeast|nooch)\b/gi;
   const NV_RE = new RegExp(`\\b(${[...NONVEGAN].sort((a, b) => b.length - a.length).join("|")})\\b`, "gi");   // longest first: "fish sauce" before "fish"
@@ -127,6 +131,52 @@
       }
     }
     return [...hits];
+  }
+
+  /* ---------------- is a pantry item vegan? ---------------- */
+  // ingredients that are often (not always) from animals: worth a look at the package
+  const MAYBE = [
+    [/\bvitamin d-?3\b|\bcholecalciferol\b/i, /\b(vegan|lichen|plant[- ]based)\b/i, "vitamin D3 (often from lanolin)"],
+    [/\bnatural flavou?rs?\b/i, /\bvegan\b/i, "“natural flavors” (can be animal-derived)"],
+    [/\bmono-? ?(?:and|&) ?diglycerides\b/i, /\bvegan\b/i, "mono- and diglycerides (sometimes animal fat)"],
+    [/\bl-?cysteine\b/i, null, "L-cysteine (often from feathers)"],
+    [/\bomega[- ]?3\b/i, /\b(ala|flax|chia|alga[el]?|algal|vegan)\b/i, "omega-3 (often from fish)"],
+    [/\bvitamin a palmitate\b/i, null, "vitamin A palmitate (sometimes animal-derived)"],
+  ];
+  /**
+   * { status, reasons } for a pantry item:
+   *   "yes" you confirmed it · "no" you said it isn't, or an animal ingredient was found ·
+   *   "check" something worth a look (or a brand-name/label item with no ingredient list) · "likely" nothing found.
+   * Homemade items take the worst status of their recipe's ingredients (pass ingById and recipeById).
+   */
+  function pantryVegan(i, ingById, recipeById, seen = new Set()) {
+    if (!i) return { status: "check", reasons: [] };
+    if (i.vegan === "yes") return { status: "yes", reasons: [] };
+    if (i.vegan === "no") return { status: "no", reasons: ["marked not vegan"] };
+    if (i.from_recipe && recipeById && ingById) {
+      const r = recipeById[i.from_recipe];
+      if (!r || seen.has(i.id)) return { status: "check", reasons: [] };
+      seen.add(i.id);
+      const rank = { yes: 0, likely: 1, check: 2, no: 3 };
+      let worst = "yes";
+      const reasons = [];
+      for (const l of r.ingredients || []) {
+        const sub = ingById[l.ingredient_id];
+        if (!sub) continue;
+        const v = pantryVegan(sub, ingById, recipeById, seen);
+        if (rank[v.status] > rank[worst]) worst = v.status;
+        if (v.status === "no" || v.status === "check") reasons.push(`${sub.name}: ${v.reasons[0] || (v.status === "no" ? "not vegan" : "unchecked")}`);
+      }
+      return { status: worst, reasons };
+    }
+    const text = [i.name, i.usda_description, i.brand, i.ingredients_text].filter(Boolean).join(". ");
+    const hits = veganFlags(text.split(/[.;]|,(?![^()]*\))/));
+    if (hits.length) return { status: "no", reasons: hits.map(x => `contains ${x}`) };
+    const maybe = MAYBE.filter(([re, okIf]) => re.test(text) && !(okIf && okIf.test(text))).map(m => m[2]);
+    if (maybe.length) return { status: "check", reasons: maybe };
+    if (i.data_type === "Branded" && !i.ingredients_text) return { status: "check", reasons: ["brand-name product: check its ingredient list"] };
+    if (i.source === "manual" && !i.ingredients_text) return { status: "check", reasons: ["entered from a label: check its ingredient list"] };
+    return { status: "likely", reasons: [] };
   }
 
   /* ---------------- categories ---------------- */
@@ -759,6 +809,6 @@ ${body}</body></html>`;
     throw new Error("Choose an EPUB or PDF file.");
   }
 
-  Z.cookbook = { read, findRecipes, assignPhotos, toDraftShape, recipePageHtml, parseIngredient, parseYield, veganFlags, guessCategory,
+  Z.cookbook = { read, findRecipes, assignPhotos, toDraftShape, recipePageHtml, parseIngredient, parseYield, veganFlags, pantryVegan, guessCategory,
     looksIngredient, looksStep, _blocksFromDoc: blocksFromDoc };
 })(globalThis.Z = globalThis.Z || {});

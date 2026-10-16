@@ -124,6 +124,14 @@
     const v = VOLUME_ML[u] ?? VOLUME_ML[u.replace(/e?s$/, "")];
     return v ? amount * v : 0;
   }
+  /** amount + unit for a recipe line moved from one pantry item to another: keep the unit when the new item
+      understands it (a weight, or a portion with the same name), otherwise convert to grams */
+  function switchUnits(amount, unit, from, to) {
+    const u = String(unit || "g").trim();
+    if (WEIGHT_UNITS[u.toLowerCase()] || (to.portions || []).some(p => p.label === u)) return { amount, unit: u };
+    const g = toGrams(amount, u, from);
+    return { amount: Math.round(g * 10) / 10, unit: "g" };
+  }
   /** a first guess at what the whole batch weighs: everything that goes in, water included (before cooking) */
   function recipeYieldGuess(recipe, ingById) {
     let g = 0;
@@ -447,6 +455,6 @@
     KEYS, BY_KEY, GROUPS, AISLES: AISLE_ORDER, AMINO, AA_KEYS,
     parseUsdaNutrients, defaultTargets, toGrams, recipeNutrition, supplementTotals, combine,
     evaluate, averageRows, score, nutrientMeta, recommendations, buildPrep, buildSchedule, statusFor,
-    aminoFromGrams, recipeAmino, recipeYieldGuess, recipeAsIngredient, looseGrams,
+    aminoFromGrams, recipeAmino, recipeYieldGuess, recipeAsIngredient, looseGrams, switchUnits,
   });
 })(globalThis.Z = globalThis.Z || {});
